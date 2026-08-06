@@ -14,7 +14,8 @@ from backend.services.llm_service import (
 def test_analyze_profile_returns_validated_analysis(mock_client: Mock, monkeypatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("GEMINI_MODEL", "test-model")
-    mock_client.return_value.models.generate_content.return_value.text = (
+    live_client = mock_client.return_value.__enter__.return_value
+    live_client.models.generate_content.return_value.text = (
         '{"match_score": 75, "strengths": ["Python"], '
         '"skill_gaps": ["Deployment"], "next_steps": ["Ship a project"]}'
     )
@@ -33,7 +34,9 @@ def test_analyze_profile_returns_validated_analysis(mock_client: Mock, monkeypat
         "next_steps": ["Ship a project"],
     }
     mock_client.assert_called_once_with(api_key="test-key")
-    call = mock_client.return_value.models.generate_content.call_args
+    mock_client.return_value.__enter__.assert_called_once_with()
+    mock_client.return_value.__exit__.assert_called_once()
+    call = live_client.models.generate_content.call_args
     assert call.kwargs["model"] == "test-model"
     assert call.kwargs["config"] == {"response_mime_type": "application/json"}
     assert "Backend developer" in call.kwargs["contents"]
@@ -59,7 +62,8 @@ def test_analyze_profile_rejects_invalid_model_output(
     mock_client: Mock, monkeypatch, model_output: str
 ) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    mock_client.return_value.models.generate_content.return_value.text = model_output
+    live_client = mock_client.return_value.__enter__.return_value
+    live_client.models.generate_content.return_value.text = model_output
 
     with pytest.raises(InvalidModelOutputError):
         analyze_profile_with_gemini("Developer", "AI Engineer", ["Python"], "API")
@@ -70,7 +74,8 @@ def test_analyze_profile_wraps_gemini_request_failures(
     mock_client: Mock, monkeypatch
 ) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    mock_client.return_value.models.generate_content.side_effect = RuntimeError("timeout")
+    live_client = mock_client.return_value.__enter__.return_value
+    live_client.models.generate_content.side_effect = RuntimeError("timeout")
 
     with pytest.raises(GeminiRequestError, match="request failed"):
         analyze_profile_with_gemini("Developer", "AI Engineer", ["Python"], "API")

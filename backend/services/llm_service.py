@@ -64,11 +64,12 @@ def analyze_profile_with_gemini(
     )
 
     try:
-        response = genai.Client(api_key=api_key).models.generate_content(
-            model=model,
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
-        )
+        with genai.Client(api_key=api_key) as client:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={"response_mime_type": "application/json"},
+            )
     except Exception as exc:
         raise GeminiRequestError("Gemini profile analysis request failed.") from exc
 
