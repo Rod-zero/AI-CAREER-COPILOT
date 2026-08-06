@@ -1,5 +1,12 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+
+from backend.services.llm_service import (
+    GeminiRequestError,
+    InvalidModelOutputError,
+    MissingAPIKeyError,
+    analyze_profile_with_gemini,
+)
 
 app = FastAPI(title="AI Career Copilot API")
 
@@ -105,3 +112,32 @@ def analyze_profile(profile: ProfileAnalysisRequest) -> ProfileAnalysisResponse:
         skill_gaps=skill_gaps,
         next_steps=next_steps,
     )
+
+
+@app.post("/analyze-profile/llm", response_model=ProfileAnalysisResponse)
+def analyze_profile_llm(profile: ProfileAnalysisRequest) -> ProfileAnalysisResponse:
+    """Return a Gemini-generated assessment of a candidate profile."""
+    try:
+        analysis = analyze_profile_with_gemini(
+            current_background=profile.current_background,
+            target_role=profile.target_role,
+            skills=profile.skills,
+            project_experience=profile.project_experience,
+        )
+    except MissingAPIKeyError:
+        raise HTTPException(
+            status_code=500,
+            detail="LLM profile analysis is not configured.",
+        ) from None
+    except InvalidModelOutputError:
+        raise HTTPException(
+            status_code=502,
+            detail="The LLM service returned an invalid response.",
+        ) from None
+    except GeminiRequestError:
+        raise HTTPException(
+            status_code=502,
+            detail="The LLM service is currently unavailable.",
+        ) from None
+
+    return ProfileAnalysisResponse(**analysis.model_dump())
