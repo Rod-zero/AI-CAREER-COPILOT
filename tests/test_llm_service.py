@@ -47,8 +47,15 @@ def test_analyze_profile_returns_validated_analysis(mock_client: Mock, monkeypat
     prompt = call.kwargs["contents"]
     assert "only explicitly stated candidate information as confirmed evidence" in prompt
     assert "Do not infer a specific platform, tool, cloud environment" in prompt
-    assert "confirmed skill gap" in prompt
-    assert "requirement that is merely not evidenced" in prompt
+    assert "'Confirmed skill gap' only when the candidate explicitly states" in prompt
+    assert "'Not evidenced in the supplied profile.'" in prompt
+    assert "Absence of evidence is not proof" in prompt
+    assert "required job qualifications more heavily than preferred ones" in prompt
+    assert "missing preferred qualification should reduce the score only modestly" in prompt
+    assert "Prioritize the most important requirements" in prompt
+    assert "at most 5 strengths, 5 skill_gaps, and 5 next_steps" in prompt
+    assert "no overlapping or repetitive bullets" in prompt
+    assert "Order next_steps by highest expected impact" in prompt
     assert "directly to the candidate with an actionable verb" in prompt
     assert "Never write next_steps as questions" in prompt
     assert "concrete resume, portfolio, project, and learning actions" in prompt
