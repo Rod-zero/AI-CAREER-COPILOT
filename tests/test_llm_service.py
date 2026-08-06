@@ -44,6 +44,14 @@ def test_analyze_profile_returns_validated_analysis(mock_client: Mock, monkeypat
     assert "Build production AI services with Python and Kubernetes." in call.kwargs[
         "contents"
     ]
+    prompt = call.kwargs["contents"]
+    assert "only explicitly stated candidate information as confirmed evidence" in prompt
+    assert "Do not infer a specific platform, tool, cloud environment" in prompt
+    assert "confirmed skill gap" in prompt
+    assert "requirement that is merely not evidenced" in prompt
+    assert "directly to the candidate with an actionable verb" in prompt
+    assert "Never write next_steps as questions" in prompt
+    assert "concrete resume, portfolio, project, and learning actions" in prompt
 
 
 def test_analyze_profile_requires_api_key(monkeypatch) -> None:
