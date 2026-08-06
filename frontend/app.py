@@ -6,11 +6,21 @@ import streamlit as st
 st.set_page_config(page_title="AI Career Copilot", page_icon="🧭")
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
+ANALYSIS_MODES = {
+    "AI analysis": ("/analyze-profile/llm", "Gemini AI analysis"),
+    "Rule-based analysis": ("/analyze-profile", "Rule-based analysis"),
+}
 
 st.title("AI Career Copilot")
 st.write("See how your experience lines up with your next role.")
 
 with st.form("profile-analysis-form"):
+    analysis_mode = st.radio(
+        "Analysis mode",
+        options=list(ANALYSIS_MODES),
+        index=0,
+        horizontal=True,
+    )
     current_background = st.text_area(
         "Current background",
         placeholder="For example: 3 years in operations and customer support",
@@ -34,17 +44,21 @@ if submitted:
         "project_experience": project_experience,
     }
 
+    endpoint, result_label = ANALYSIS_MODES[analysis_mode]
+
     try:
-        response = requests.post(f"{API_BASE_URL}/analyze-profile", json=payload, timeout=10)
-        response.raise_for_status()
-        analysis = response.json()
+        with st.spinner(f"Running {result_label.lower()}..."):
+            response = requests.post(f"{API_BASE_URL}{endpoint}", json=payload, timeout=10)
+            response.raise_for_status()
+            analysis = response.json()
     except requests.ConnectionError:
         st.error("Could not connect to the backend. Make sure the FastAPI server is running.")
-    except requests.RequestException as exc:
-        st.error(f"The backend could not analyze the profile: {exc}")
+    except requests.RequestException:
+        st.error("The profile analysis could not be completed. Please try again.")
     except ValueError:
         st.error("The backend returned an invalid response.")
     else:
+        st.info(f"Result source: {result_label}")
         st.metric("Match score", f"{analysis['match_score']}%")
 
         st.subheader("Strengths")
