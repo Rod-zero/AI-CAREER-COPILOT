@@ -55,9 +55,11 @@ elif submitted:
 
     try:
         with st.spinner(f"Running {result_label.lower()}..."):
-            response = requests.post(f"{API_BASE_URL}{endpoint}", json=payload, timeout=10)
+            response = requests.post(f"{API_BASE_URL}{endpoint}", json=payload, timeout=60)
             response.raise_for_status()
             analysis = response.json()
+    except requests.Timeout:
+        st.error("The AI analysis took too long. Please try again.")
     except requests.ConnectionError:
         st.error("Could not connect to the backend. Make sure the FastAPI server is running.")
     except requests.RequestException:

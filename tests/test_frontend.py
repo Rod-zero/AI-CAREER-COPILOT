@@ -63,7 +63,7 @@ def test_frontend_submits_selected_analysis_mode(
             "skills": ["Python", "APIs"],
             "project_experience": PROFILE_VALUES["project_experience"],
         },
-        timeout=10,
+        timeout=60,
     )
     assert app.info[0].value == f"Result source: {expected_label}"
     assert app.metric[0].value == "82%"
@@ -86,6 +86,18 @@ def test_frontend_shows_safe_error_and_preserves_form_data(mock_post: Mock) -> N
     assert app.text_area[1].value == PROFILE_VALUES["job_description"]
     assert app.text_input[1].value == PROFILE_VALUES["skills_text"]
     assert app.text_area[2].value == PROFILE_VALUES["project_experience"]
+
+
+@patch("requests.post")
+def test_frontend_shows_timeout_specific_error(mock_post: Mock) -> None:
+    mock_post.side_effect = requests.ReadTimeout("internal timeout detail")
+
+    app = _filled_app()
+    app.button[0].click().run()
+
+    assert not app.exception
+    assert app.error[0].value == "The AI analysis took too long. Please try again."
+    assert "internal timeout detail" not in app.error[0].value
 
 
 @pytest.mark.parametrize("mode", ["AI analysis", "Rule-based analysis"])
