@@ -18,6 +18,7 @@ def test_partial_skill_match_score() -> None:
         json={
             "current_background": "Operations analyst",
             "target_role": "Data Analyst",
+            "job_description": "Seeking an analyst with Python, SQL, and statistics.",
             "skills": ["Python", "SQL", "Communication"],
             "project_experience": "Built a reporting dashboard that tracked weekly operational metrics.",
         },
@@ -46,6 +47,7 @@ def test_full_skill_match_score() -> None:
         json={
             "current_background": "Data analyst",
             "target_role": "Data Scientist",
+            "job_description": "Seeking a data scientist with modeling experience.",
             "skills": ["Python", "SQL", "Statistics", "Machine Learning", "Data Analysis"],
             "project_experience": (
                 "Built and evaluated a forecasting model using production customer data."
@@ -63,6 +65,7 @@ def test_empty_background_does_not_add_background_points() -> None:
         json={
             "current_background": "",
             "target_role": "Data Analyst",
+            "job_description": "Seeking an analyst with strong quantitative skills.",
             "skills": ["Python", "SQL", "Statistics", "Machine Learning"],
             "project_experience": (
                 "Built and evaluated a reporting pipeline using operational data."
@@ -80,6 +83,7 @@ def test_short_project_experience_does_not_add_project_points() -> None:
         json={
             "current_background": "Data analyst",
             "target_role": "Data Analyst",
+            "job_description": "Seeking an analyst with dashboard experience.",
             "skills": ["Python", "SQL", "Statistics", "Machine Learning"],
             "project_experience": "Built a dashboard.",
         },
@@ -95,6 +99,7 @@ def test_agentic_ai_engineer_uses_specific_skill_mapping() -> None:
         json={
             "current_background": "Backend engineer",
             "target_role": "Agentic AI Engineer",
+            "job_description": "Seeking an engineer to build agentic AI systems.",
             "skills": ["Python", "LLM"],
             "project_experience": "Built a prototype agent.",
         },
@@ -119,6 +124,7 @@ def test_data_scientist_uses_specific_skill_mapping() -> None:
         json={
             "current_background": "Data analyst",
             "target_role": "Data Scientist",
+            "job_description": "Seeking a data scientist with Python and statistics.",
             "skills": ["Python", "SQL"],
             "project_experience": "Analyzed customer retention trends.",
         },

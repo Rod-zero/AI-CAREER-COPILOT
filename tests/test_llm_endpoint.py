@@ -15,6 +15,7 @@ client = TestClient(app)
 PROFILE = {
     "current_background": "Backend developer",
     "target_role": "AI Engineer",
+    "job_description": "Build production LLM services using Python and APIs.",
     "skills": ["Python", "APIs"],
     "project_experience": "Built and deployed a production API.",
 }
@@ -41,6 +42,7 @@ def test_llm_endpoint_returns_profile_analysis(mock_analyze: Mock) -> None:
     mock_analyze.assert_called_once_with(
         current_background=PROFILE["current_background"],
         target_role=PROFILE["target_role"],
+        job_description=PROFILE["job_description"],
         skills=PROFILE["skills"],
         project_experience=PROFILE["project_experience"],
     )

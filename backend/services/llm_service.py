@@ -40,6 +40,7 @@ class ProfileAnalysis(BaseModel):
 def analyze_profile_with_gemini(
     current_background: str,
     target_role: str,
+    job_description: str,
     skills: list[str],
     project_experience: str,
 ) -> ProfileAnalysis:
@@ -52,14 +53,21 @@ def analyze_profile_with_gemini(
     profile = {
         "current_background": current_background,
         "target_role": target_role,
+        "job_description": job_description,
         "skills": skills,
         "project_experience": project_experience,
     }
     prompt = (
-        "Analyze this candidate profile for the target role. Return only JSON with "
-        "exactly these fields: match_score (an integer from 0 to 100), strengths "
-        "(an array of strings), skill_gaps (an array of strings), and next_steps "
-        "(an array of strings).\n\nProfile:\n"
+        "Analyze the candidate primarily against the supplied job description. "
+        "Identify its important required and preferred qualifications, then compare "
+        "them only against evidence explicitly supplied in the candidate profile. "
+        "Do not assume unstated experience. Do not invent requirements unsupported "
+        "by the job description. Produce a calibrated match_score from 0 to 100 and "
+        "keep all results concise and actionable. Do not include or recommend hidden "
+        "chain-of-thought or private reasoning. Return only JSON with exactly these "
+        "fields: match_score (an integer from 0 to 100), strengths (an array of "
+        "strings), skill_gaps (an array of strings), and next_steps (an array of "
+        "strings).\n\nCandidate profile and job description:\n"
         f"{json.dumps(profile, ensure_ascii=False)}"
     )
 

@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.services.llm_service import (
     GeminiRequestError,
@@ -14,6 +14,7 @@ app = FastAPI(title="AI Career Copilot API")
 class ProfileAnalysisRequest(BaseModel):
     current_background: str
     target_role: str
+    job_description: str = Field(min_length=1)
     skills: list[str]
     project_experience: str
 
@@ -121,6 +122,7 @@ def analyze_profile_llm(profile: ProfileAnalysisRequest) -> ProfileAnalysisRespo
         analysis = analyze_profile_with_gemini(
             current_background=profile.current_background,
             target_role=profile.target_role,
+            job_description=profile.job_description,
             skills=profile.skills,
             project_experience=profile.project_experience,
         )

@@ -9,6 +9,7 @@ APP_PATH = Path(__file__).parents[1] / "frontend" / "app.py"
 PROFILE_VALUES = {
     "current_background": "Backend developer",
     "target_role": "AI Engineer",
+    "job_description": "Build production LLM services using Python and APIs.",
     "skills_text": "Python, APIs",
     "project_experience": "Built a production API.",
 }
@@ -26,8 +27,9 @@ def _filled_app(mode: str | None = None) -> AppTest:
         app.radio[0].set_value(mode)
     app.text_area[0].set_value(PROFILE_VALUES["current_background"])
     app.text_input[0].set_value(PROFILE_VALUES["target_role"])
+    app.text_area[1].set_value(PROFILE_VALUES["job_description"])
     app.text_input[1].set_value(PROFILE_VALUES["skills_text"])
-    app.text_area[1].set_value(PROFILE_VALUES["project_experience"])
+    app.text_area[2].set_value(PROFILE_VALUES["project_experience"])
     return app
 
 
@@ -57,6 +59,7 @@ def test_frontend_submits_selected_analysis_mode(
         json={
             "current_background": PROFILE_VALUES["current_background"],
             "target_role": PROFILE_VALUES["target_role"],
+            "job_description": PROFILE_VALUES["job_description"],
             "skills": ["Python", "APIs"],
             "project_experience": PROFILE_VALUES["project_experience"],
         },
@@ -80,5 +83,24 @@ def test_frontend_shows_safe_error_and_preserves_form_data(mock_post: Mock) -> N
     assert "secret backend detail" not in app.error[0].value
     assert app.text_area[0].value == PROFILE_VALUES["current_background"]
     assert app.text_input[0].value == PROFILE_VALUES["target_role"]
+    assert app.text_area[1].value == PROFILE_VALUES["job_description"]
     assert app.text_input[1].value == PROFILE_VALUES["skills_text"]
-    assert app.text_area[1].value == PROFILE_VALUES["project_experience"]
+    assert app.text_area[2].value == PROFILE_VALUES["project_experience"]
+
+
+@pytest.mark.parametrize("mode", ["AI analysis", "Rule-based analysis"])
+@patch("requests.post")
+def test_frontend_does_not_submit_empty_job_description(
+    mock_post: Mock, mode: str
+) -> None:
+    app = _filled_app(mode)
+    app.text_area[1].set_value("   ")
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    mock_post.assert_not_called()
+    assert app.error[0].value == (
+        "Please enter a job description before analyzing your profile."
+    )
+    assert app.text_area[1].value == "   "

@@ -26,6 +26,10 @@ with st.form("profile-analysis-form"):
         placeholder="For example: 3 years in operations and customer support",
     )
     target_role = st.text_input("Target role", placeholder="For example: Data Analyst")
+    job_description = st.text_area(
+        "Job description",
+        placeholder="Paste the job's responsibilities and qualifications.",
+    )
     skills_text = st.text_input(
         "Skills (comma-separated)",
         placeholder="Python, SQL, communication",
@@ -36,10 +40,13 @@ with st.form("profile-analysis-form"):
     )
     submitted = st.form_submit_button("Analyze Profile", type="primary")
 
-if submitted:
+if submitted and not job_description.strip():
+    st.error("Please enter a job description before analyzing your profile.")
+elif submitted:
     payload = {
         "current_background": current_background,
         "target_role": target_role,
+        "job_description": job_description,
         "skills": [skill.strip() for skill in skills_text.split(",") if skill.strip()],
         "project_experience": project_experience,
     }
