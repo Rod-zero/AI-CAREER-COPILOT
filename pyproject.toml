@@ -12,14 +12,16 @@ dependencies = [
     "fastapi",
     "google-genai",
     "httpx",
+    "python-multipart",
     "python-dotenv",
+    "pypdf",
     "requests",
     "streamlit",
     "uvicorn",
 ]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "reportlab"]
 
 [tool.setuptools.packages.find]
 include = ["backend*"]

@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import date
 
 from dotenv import load_dotenv
 from google import genai
@@ -26,15 +27,41 @@ class GeminiRequestError(LLMServiceError):
     """Raised when a request to Gemini fails."""
 
 
+class ScoreBreakdown(BaseModel):
+    """Validated dimension scores returned by Gemini."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    technical_skills: int = Field(ge=0, le=100)
+    domain_experience: int = Field(ge=0, le=100)
+    seniority: int = Field(ge=0, le=100)
+    role_specific_requirements: int = Field(ge=0, le=100)
+    education: int = Field(ge=0, le=100)
+    communication_leadership: int = Field(ge=0, le=100)
+
+
 class ProfileAnalysis(BaseModel):
     """Validated structure returned by Gemini."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     match_score: int = Field(ge=0, le=100)
+    score_breakdown: ScoreBreakdown
     strengths: list[str]
     skill_gaps: list[str]
     next_steps: list[str]
+
+
+def calculate_weighted_score(score_breakdown: ScoreBreakdown) -> int:
+    """Calculate the overall score from the documented rubric weights."""
+    return round(
+        score_breakdown.technical_skills * 0.30
+        + score_breakdown.domain_experience * 0.20
+        + score_breakdown.seniority * 0.20
+        + score_breakdown.role_specific_requirements * 0.15
+        + score_breakdown.education * 0.05
+        + score_breakdown.communication_leadership * 0.10
+    )
 
 
 def analyze_profile_with_gemini(
@@ -57,20 +84,52 @@ def analyze_profile_with_gemini(
         "skills": skills,
         "project_experience": project_experience,
     }
+    current_date = date.today().isoformat()
     prompt = (
         "Analyze the candidate primarily against the supplied job description. "
         "Identify its important required and preferred qualifications, then compare "
         "them only against evidence explicitly supplied in the candidate profile. "
         "Treat only explicitly stated candidate information as confirmed evidence. "
+        "Ground every strength, skill gap, and next step in the supplied candidate "
+        "profile and job description. Do not invent experience, credentials, dates, "
+        "education status, or employment status. The current date is "
+        f"{current_date}. Use it when interpreting dates. Do not infer that a degree "
+        "is still in progress solely from a date range when its end date is in the "
+        "past. If completion or employment status remains ambiguous, describe it as "
+        "not evidenced instead of guessing. "
         "Do not infer a specific platform, tool, cloud environment, or depth of "
         "experience unless it is stated. Do not invent requirements unsupported by "
         "the job description. Use 'Confirmed skill gap' only when the candidate "
         "explicitly states that they lack the skill or experience. When candidate "
         "evidence for a qualification is absent, label it 'Not evidenced in the "
         "supplied profile.' Absence of evidence is not proof that the candidate "
-        "lacks the qualification. Calculate a calibrated match_score from 0 to 100, "
+        "lacks the qualification. Classify relevant evidence as a strong match, a "
+        "partial match / transferable experience, or not evidenced / major gap. "
+        "Credit adjacent experience as a partial match: for example, hands-on RAG "
+        "or LLM implementation is relevant transferable experience for a GenAI "
+        "technical leadership or Agentic AI requirement, but does not by itself "
+        "prove leadership scope or Agentic AI experience. Use precise gap wording "
+        "such as 'Not evidenced in the supplied resume...', 'Partial match: "
+        "candidate has X, but the role requires Y...', or 'Major gap: ...'. "
+        "Evaluate these weighted dimensions separately before assigning the overall "
+        "match_score: core technical skills / ML / data science 30%; relevant domain "
+        "experience 20%; seniority / years / scope of responsibility 20%; "
+        "role-specific tools, systems, governance, or production requirements 15%; "
+        "education / foundational qualifications 5%; and communication / leadership "
+        "/ collaboration / other job requirements 10%. Score each dimension "
+        "independently from 0 to 100 based only on evidence in the supplied profile "
+        "and job description. Calculate a calibrated match_score from 0 to 100 using "
+        "this rubric, "
         "weighting required job qualifications more heavily than preferred ones; a "
         "missing preferred qualification should reduce the score only modestly. "
+        "Do not let one missing requirement dominate the score unless the job "
+        "description makes it mandatory and central. Major hard gaps such as a "
+        "required 5-7 years of professional experience, specific regulated-domain "
+        "experience, or required leadership scope must materially reduce the score. "
+        "Do not calculate an exact total duration of professional experience unless "
+        "the supplied profile explicitly provides enough clear information. Prefer "
+        "wording such as 'the supplied resume does not evidence the required 5-7 "
+        "years of professional experience.' "
         "Prioritize the most important requirements from the job description. Return "
         "at most 5 strengths, 5 skill_gaps, and 5 next_steps, with no overlapping or "
         "repetitive bullets. Order next_steps by highest expected impact on the "
@@ -78,11 +137,16 @@ def analyze_profile_with_gemini(
         "an actionable verb such as "
         "build, add, learn, demonstrate, quantify, tailor, or document. Never write "
         "next_steps as questions or actions for a recruiter or interviewer. Prefer "
-        "concrete resume, portfolio, project, and learning actions. Keep all results "
+        "concrete resume, portfolio, project, and learning actions. Distinguish "
+        "resume-positioning improvements from genuine experience or skill gaps that "
+        "cannot be fixed through wording alone. Keep all results "
         "concise and actionable. Do not include or recommend hidden chain-of-thought "
         "or private reasoning. Return only JSON with exactly these fields: "
         "match_score (an integer from 0 to 100), strengths (an array of strings), "
-        "skill_gaps (an array of strings), and next_steps (an array of strings)."
+        "skill_gaps (an array of strings), next_steps (an array of strings), and "
+        "score_breakdown (an object containing integer scores from 0 to 100 for "
+        "technical_skills, domain_experience, seniority, role_specific_requirements, "
+        "education, and communication_leadership)."
         "\n\nCandidate profile and job description:\n"
         f"{json.dumps(profile, ensure_ascii=False)}"
     )
@@ -98,7 +162,10 @@ def analyze_profile_with_gemini(
         raise GeminiRequestError("Gemini profile analysis request failed.") from exc
 
     try:
-        return ProfileAnalysis.model_validate_json(response.text)
+        analysis = ProfileAnalysis.model_validate_json(response.text)
+        return analysis.model_copy(
+            update={"match_score": calculate_weighted_score(analysis.score_breakdown)}
+        )
     except (TypeError, ValueError, ValidationError) as exc:
         raise InvalidModelOutputError(
             "Gemini returned invalid profile analysis output."

@@ -1,3 +1,4 @@
+from datetime import date
 from unittest.mock import Mock, patch
 
 import pytest
@@ -6,7 +7,9 @@ from backend.services.llm_service import (
     GeminiRequestError,
     InvalidModelOutputError,
     MissingAPIKeyError,
+    ScoreBreakdown,
     analyze_profile_with_gemini,
+    calculate_weighted_score,
 )
 
 
@@ -17,7 +20,10 @@ def test_analyze_profile_returns_validated_analysis(mock_client: Mock, monkeypat
     live_client = mock_client.return_value.__enter__.return_value
     live_client.models.generate_content.return_value.text = (
         '{"match_score": 75, "strengths": ["Python"], '
-        '"skill_gaps": ["Deployment"], "next_steps": ["Ship a project"]}'
+        '"skill_gaps": ["Deployment"], "next_steps": ["Ship a project"], '
+        '"score_breakdown": {"technical_skills": 80, "domain_experience": 40, '
+        '"seniority": 20, "role_specific_requirements": 60, "education": 100, '
+        '"communication_leadership": 70}}'
     )
 
     result = analyze_profile_with_gemini(
@@ -29,7 +35,15 @@ def test_analyze_profile_returns_validated_analysis(mock_client: Mock, monkeypat
     )
 
     assert result.model_dump() == {
-        "match_score": 75,
+        "match_score": 57,
+        "score_breakdown": {
+            "technical_skills": 80,
+            "domain_experience": 40,
+            "seniority": 20,
+            "role_specific_requirements": 60,
+            "education": 100,
+            "communication_leadership": 70,
+        },
         "strengths": ["Python"],
         "skill_gaps": ["Deployment"],
         "next_steps": ["Ship a project"],
@@ -59,6 +73,38 @@ def test_analyze_profile_returns_validated_analysis(mock_client: Mock, monkeypat
     assert "directly to the candidate with an actionable verb" in prompt
     assert "Never write next_steps as questions" in prompt
     assert "concrete resume, portfolio, project, and learning actions" in prompt
+    assert "Ground every strength, skill gap, and next step" in prompt
+    assert "Do not invent experience, credentials, dates" in prompt
+    assert f"The current date is {date.today().isoformat()}" in prompt
+    assert "Do not infer that a degree is still in progress" in prompt
+    assert "partial match / transferable experience" in prompt
+    assert "hands-on RAG or LLM implementation" in prompt
+    assert "core technical skills / ML / data science 30%" in prompt
+    assert "relevant domain experience 20%" in prompt
+    assert "seniority / years / scope of responsibility 20%" in prompt
+    assert "governance, or production requirements 15%" in prompt
+    assert "education / foundational qualifications 5%" in prompt
+    assert "communication / leadership / collaboration" in prompt
+    assert "Do not let one missing requirement dominate the score" in prompt
+    assert "Major hard gaps" in prompt
+    assert "resume-positioning improvements from genuine experience" in prompt
+    assert "Score each dimension independently from 0 to 100" in prompt
+    assert "Do not calculate an exact total duration" in prompt
+    assert "score_breakdown (an object containing integer scores" in prompt
+    assert "technical_skills, domain_experience, seniority" in prompt
+
+
+def test_calculate_weighted_score() -> None:
+    score_breakdown = ScoreBreakdown(
+        technical_skills=80,
+        domain_experience=40,
+        seniority=20,
+        role_specific_requirements=60,
+        education=100,
+        communication_leadership=70,
+    )
+
+    assert calculate_weighted_score(score_breakdown) == 57
 
 
 def test_analyze_profile_requires_api_key(monkeypatch) -> None:
@@ -77,6 +123,13 @@ def test_analyze_profile_requires_api_key(monkeypatch) -> None:
         "not json",
         '{"match_score": 101, "strengths": [], "skill_gaps": [], "next_steps": []}',
         '{"match_score": 50, "strengths": []}',
+        (
+            '{"match_score": 50, "strengths": [], "skill_gaps": [], '
+            '"next_steps": [], "score_breakdown": {"technical_skills": 101, '
+            '"domain_experience": 50, "seniority": 50, '
+            '"role_specific_requirements": 50, "education": 50, '
+            '"communication_leadership": 50}}'
+        ),
     ],
 )
 def test_analyze_profile_rejects_invalid_model_output(

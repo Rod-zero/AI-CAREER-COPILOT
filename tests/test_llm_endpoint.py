@@ -9,6 +9,7 @@ from backend.services.llm_service import (
     InvalidModelOutputError,
     MissingAPIKeyError,
     ProfileAnalysis,
+    ScoreBreakdown,
 )
 
 client = TestClient(app)
@@ -25,6 +26,14 @@ PROFILE = {
 def test_llm_endpoint_returns_profile_analysis(mock_analyze: Mock) -> None:
     mock_analyze.return_value = ProfileAnalysis(
         match_score=82,
+        score_breakdown=ScoreBreakdown(
+            technical_skills=90,
+            domain_experience=70,
+            seniority=60,
+            role_specific_requirements=80,
+            education=100,
+            communication_leadership=80,
+        ),
         strengths=["Python", "API development"],
         skill_gaps=["LLM evaluation"],
         next_steps=["Build an evaluated LLM application"],
@@ -35,6 +44,14 @@ def test_llm_endpoint_returns_profile_analysis(mock_analyze: Mock) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "match_score": 82,
+        "score_breakdown": {
+            "technical_skills": 90,
+            "domain_experience": 70,
+            "seniority": 60,
+            "role_specific_requirements": 80,
+            "education": 100,
+            "communication_leadership": 80,
+        },
         "strengths": ["Python", "API development"],
         "skill_gaps": ["LLM evaluation"],
         "next_steps": ["Build an evaluated LLM application"],

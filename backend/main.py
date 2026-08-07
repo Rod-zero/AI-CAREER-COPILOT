@@ -1,12 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from backend.services.llm_service import (
     GeminiRequestError,
     InvalidModelOutputError,
     MissingAPIKeyError,
+    ScoreBreakdown,
     analyze_profile_with_gemini,
 )
+from backend.services.resume_parser import extract_text_from_pdf
 
 app = FastAPI(title="AI Career Copilot API")
 
@@ -21,6 +23,7 @@ class ProfileAnalysisRequest(BaseModel):
 
 class ProfileAnalysisResponse(BaseModel):
     match_score: int
+    score_breakdown: ScoreBreakdown | None = None
     strengths: list[str]
     skill_gaps: list[str]
     next_steps: list[str]
@@ -74,7 +77,72 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/analyze-profile", response_model=ProfileAnalysisResponse)
+@app.post("/parse-resume")
+async def parse_resume(file: UploadFile = File(...)) -> dict[str, str]:
+    """Extract text from an uploaded PDF resume."""
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF.")
+
+    text = extract_text_from_pdf(await file.read())
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail="The PDF contains no extractable text.",
+        )
+
+    return {"filename": file.filename or "", "text": text}
+
+
+@app.post("/analyze-resume/llm", response_model=ProfileAnalysisResponse)
+async def analyze_resume_llm(
+    file: UploadFile = File(...),
+    job_description: str = Form(...),
+) -> ProfileAnalysisResponse:
+    """Analyze an uploaded PDF resume against a job description with Gemini."""
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF.")
+    if not job_description.strip():
+        raise HTTPException(status_code=400, detail="Job description must not be empty.")
+
+    resume_text = extract_text_from_pdf(await file.read())
+    if not resume_text:
+        raise HTTPException(
+            status_code=400,
+            detail="The PDF contains no extractable text.",
+        )
+
+    try:
+        analysis = analyze_profile_with_gemini(
+            current_background=resume_text,
+            target_role="",
+            job_description=job_description,
+            skills=[],
+            project_experience="",
+        )
+    except MissingAPIKeyError:
+        raise HTTPException(
+            status_code=500,
+            detail="LLM profile analysis is not configured.",
+        ) from None
+    except InvalidModelOutputError:
+        raise HTTPException(
+            status_code=502,
+            detail="The LLM service returned an invalid response.",
+        ) from None
+    except GeminiRequestError:
+        raise HTTPException(
+            status_code=502,
+            detail="The LLM service is currently unavailable.",
+        ) from None
+
+    return ProfileAnalysisResponse(**analysis.model_dump())
+
+
+@app.post(
+    "/analyze-profile",
+    response_model=ProfileAnalysisResponse,
+    response_model_exclude_none=True,
+)
 def analyze_profile(profile: ProfileAnalysisRequest) -> ProfileAnalysisResponse:
     """Return a deterministic first-pass assessment of a candidate profile."""
     target_role = profile.target_role.lower()
