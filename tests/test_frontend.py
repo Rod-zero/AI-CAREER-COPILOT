@@ -383,3 +383,62 @@ def test_frontend_handles_resume_backend_error(mock_post: Mock) -> None:
         "The resume analysis could not be completed. Please try again."
     )
     assert "secret backend detail" not in app.error[0].value
+
+
+@patch("requests.post")
+def test_frontend_preserves_analysis_after_rate_limit(mock_post: Mock) -> None:
+    analysis_response = Mock()
+    analysis_response.json.return_value = RESUME_ANALYSIS
+    rate_limit_response = Mock(status_code=429)
+    mock_post.side_effect = [
+        analysis_response,
+        requests.HTTPError("internal detail", response=rate_limit_response),
+    ]
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.file_uploader[0].set_value(
+        ("resume.pdf", _pdf_bytes(), "application/pdf")
+    )
+    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+
+    app.button[0].click().run()
+    app.button[1].click().run()
+
+    assert not app.exception
+    assert app.error[0].value == (
+        "Too many AI requests. Please wait a little and try again."
+    )
+    assert app.metric[0].value == "82%"
+    assert "internal detail" not in app.error[0].value
+
+
+@patch("requests.post")
+def test_frontend_rejects_oversized_jd_without_request(mock_post: Mock) -> None:
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.text_area[0].set_value("x" * 20_001)
+
+    app.button[2].click().run()
+
+    assert not app.exception
+    mock_post.assert_not_called()
+    assert app.error[0].value == (
+        "The job description is too long. Maximum length is 20,000 characters."
+    )
+
+
+@patch("requests.post")
+def test_frontend_shows_friendly_oversized_resume_error(mock_post: Mock) -> None:
+    oversized_response = Mock(status_code=413)
+    mock_post.side_effect = requests.HTTPError(
+        "internal detail", response=oversized_response
+    )
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.file_uploader[0].set_value(
+        ("resume.pdf", _pdf_bytes(), "application/pdf")
+    )
+    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    assert app.error[0].value == "The resume PDF is too large. Maximum size is 5 MB."
+    assert "internal detail" not in app.error[0].value

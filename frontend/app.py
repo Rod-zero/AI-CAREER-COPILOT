@@ -6,7 +6,18 @@ import streamlit as st
 
 st.set_page_config(page_title="AI Career Copilot", page_icon="🧭")
 
+def positive_int_setting(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
+MAX_RESUME_SIZE_MB = positive_int_setting("MAX_RESUME_SIZE_MB", 5)
+MAX_RESUME_SIZE_BYTES = MAX_RESUME_SIZE_MB * 1024 * 1024
+MAX_JD_CHARS = positive_int_setting("MAX_JD_CHARS", 20_000)
 ANALYSIS_MODES = {
     "AI analysis": ("/analyze-profile/llm", "Gemini AI analysis"),
     "Rule-based analysis": ("/analyze-profile", "Rule-based analysis"),
@@ -19,6 +30,18 @@ SCORE_LABELS = {
     "education": "Education",
     "communication_leadership": "Communication / leadership",
 }
+
+
+def display_http_error(error: requests.HTTPError, default_message: str) -> None:
+    status_code = getattr(error.response, "status_code", None)
+    if status_code == 429:
+        st.error("Too many AI requests. Please wait a little and try again.")
+    elif status_code == 413:
+        st.error(f"The resume PDF is too large. Maximum size is {MAX_RESUME_SIZE_MB} MB.")
+    elif status_code == 422:
+        st.error("Some submitted text is too long. Please shorten it and try again.")
+    else:
+        st.error(default_message)
 
 
 def display_score_breakdown(analysis: dict) -> None:
@@ -110,6 +133,10 @@ with st.form("resume-analysis-form"):
 
 if jd_extraction_submitted and not resume_job_description.strip():
     st.error("Please enter a job description before extracting requirements.")
+elif jd_extraction_submitted and len(resume_job_description) > MAX_JD_CHARS:
+    st.error(
+        f"The job description is too long. Maximum length is {MAX_JD_CHARS:,} characters."
+    )
 elif jd_extraction_submitted:
     try:
         with st.spinner("Extracting structured JD requirements..."):
@@ -124,6 +151,8 @@ elif jd_extraction_submitted:
         st.error("JD extraction took too long. Please try again.")
     except requests.ConnectionError:
         st.error("Could not connect to the backend. Make sure the FastAPI server is running.")
+    except requests.HTTPError as exc:
+        display_http_error(exc, "JD extraction could not be completed. Please try again.")
     except requests.RequestException:
         st.error("JD extraction could not be completed. Please try again.")
     except ValueError:
@@ -140,6 +169,12 @@ elif resume_action_submitted and not resume_job_description.strip():
         st.error("Please enter a job description before analyzing your resume.")
     else:
         st.error("Please enter a job description before tailoring your resume.")
+elif resume_action_submitted and len(resume_job_description) > MAX_JD_CHARS:
+    st.error(
+        f"The job description is too long. Maximum length is {MAX_JD_CHARS:,} characters."
+    )
+elif resume_action_submitted and len(resume_file.getvalue()) > MAX_RESUME_SIZE_BYTES:
+    st.error(f"The resume PDF is too large. Maximum size is {MAX_RESUME_SIZE_MB} MB.")
 elif resume_action_submitted:
     resume_bytes = resume_file.getvalue()
     context_key = hashlib.sha256(
@@ -196,6 +231,13 @@ elif resume_action_submitted:
             st.error("Resume tailoring took too long. Please try again.")
     except requests.ConnectionError:
         st.error("Could not connect to the backend. Make sure the FastAPI server is running.")
+    except requests.HTTPError as exc:
+        default_message = (
+            "The resume analysis could not be completed. Please try again."
+            if resume_submitted
+            else "Resume tailoring could not be completed. Please try again."
+        )
+        display_http_error(exc, default_message)
     except requests.RequestException:
         if resume_submitted:
             st.error("The resume analysis could not be completed. Please try again.")
@@ -297,6 +339,11 @@ with st.expander("No resume? Enter profile manually"):
         except requests.ConnectionError:
             st.error(
                 "Could not connect to the backend. Make sure the FastAPI server is running."
+            )
+        except requests.HTTPError as exc:
+            display_http_error(
+                exc,
+                "The profile analysis could not be completed. Please try again.",
             )
         except requests.RequestException:
             st.error("The profile analysis could not be completed. Please try again.")

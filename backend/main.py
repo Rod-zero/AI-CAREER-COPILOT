@@ -1,6 +1,19 @@
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from backend.config import (
+    MAX_BACKGROUND_CHARS,
+    MAX_JD_CHARS,
+    MAX_PROJECT_CHARS,
+    MAX_RESUME_SIZE_BYTES,
+    MAX_RESUME_SIZE_MB,
+    MAX_SKILL_CHARS,
+    MAX_SKILLS,
+    MAX_TARGET_ROLE_CHARS,
+)
+from backend.rate_limiter import enforce_ai_rate_limit
 from backend.services.llm_service import (
     GeminiRequestError,
     InvalidModelOutputError,
@@ -17,11 +30,13 @@ app = FastAPI(title="AI Career Copilot API")
 
 
 class ProfileAnalysisRequest(BaseModel):
-    current_background: str
-    target_role: str
-    job_description: str = Field(min_length=1)
-    skills: list[str]
-    project_experience: str
+    current_background: str = Field(max_length=MAX_BACKGROUND_CHARS)
+    target_role: str = Field(max_length=MAX_TARGET_ROLE_CHARS)
+    job_description: str = Field(min_length=1, max_length=MAX_JD_CHARS)
+    skills: list[Annotated[str, Field(max_length=MAX_SKILL_CHARS)]] = Field(
+        max_length=MAX_SKILLS
+    )
+    project_experience: str = Field(max_length=MAX_PROJECT_CHARS)
 
 
 class ProfileAnalysisResponse(BaseModel):
@@ -50,7 +65,7 @@ class UploadedResumeTailoringResponse(ResumeTailoringResponse):
 
 
 class JDExtractionRequest(BaseModel):
-    job_description: str = Field(min_length=1)
+    job_description: str = Field(min_length=1, max_length=MAX_JD_CHARS)
 
 
 ROLE_SKILLS = {
@@ -95,13 +110,37 @@ ROLE_MATCHERS = (
 DEFAULT_SKILLS = {"communication", "problem solving", "project management"}
 
 
+async def _extract_uploaded_pdf(file: UploadFile) -> str:
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF.")
+
+    file_bytes = await file.read(MAX_RESUME_SIZE_BYTES + 1)
+    if len(file_bytes) > MAX_RESUME_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Resume PDF must be no larger than {MAX_RESUME_SIZE_MB} MB.",
+        )
+
+    text = extract_text_from_pdf(file_bytes)
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail="The PDF contains no extractable text.",
+        )
+    return text
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Return the API health status."""
     return {"status": "ok"}
 
 
-@app.post("/extract-jd", response_model=StructuredJobDescription)
+@app.post(
+    "/extract-jd",
+    response_model=StructuredJobDescription,
+    dependencies=[Depends(enforce_ai_rate_limit)],
+)
 def extract_jd(request: JDExtractionRequest) -> StructuredJobDescription:
     """Extract structured requirements from raw job-description text."""
     if not request.job_description.strip():
@@ -129,36 +168,24 @@ def extract_jd(request: JDExtractionRequest) -> StructuredJobDescription:
 @app.post("/parse-resume")
 async def parse_resume(file: UploadFile = File(...)) -> dict[str, str]:
     """Extract text from an uploaded PDF resume."""
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF.")
-
-    text = extract_text_from_pdf(await file.read())
-    if not text:
-        raise HTTPException(
-            status_code=400,
-            detail="The PDF contains no extractable text.",
-        )
-
+    text = await _extract_uploaded_pdf(file)
     return {"filename": file.filename or "", "text": text}
 
 
-@app.post("/analyze-resume/llm", response_model=ResumeAnalysisResponse)
+@app.post(
+    "/analyze-resume/llm",
+    response_model=ResumeAnalysisResponse,
+    dependencies=[Depends(enforce_ai_rate_limit)],
+)
 async def analyze_resume_llm(
     file: UploadFile = File(...),
-    job_description: str = Form(...),
+    job_description: str = Form(..., max_length=MAX_JD_CHARS),
 ) -> ResumeAnalysisResponse:
     """Analyze an uploaded PDF resume against a job description with Gemini."""
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF.")
     if not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description must not be empty.")
 
-    resume_text = extract_text_from_pdf(await file.read())
-    if not resume_text:
-        raise HTTPException(
-            status_code=400,
-            detail="The PDF contains no extractable text.",
-        )
+    resume_text = await _extract_uploaded_pdf(file)
 
     try:
         analysis = analyze_profile_with_gemini(
@@ -232,7 +259,11 @@ def analyze_profile(profile: ProfileAnalysisRequest) -> ProfileAnalysisResponse:
     )
 
 
-@app.post("/analyze-profile/llm", response_model=ProfileAnalysisResponse)
+@app.post(
+    "/analyze-profile/llm",
+    response_model=ProfileAnalysisResponse,
+    dependencies=[Depends(enforce_ai_rate_limit)],
+)
 def analyze_profile_llm(profile: ProfileAnalysisRequest) -> ProfileAnalysisResponse:
     """Return a Gemini-generated assessment of a candidate profile."""
     try:
@@ -262,7 +293,11 @@ def analyze_profile_llm(profile: ProfileAnalysisRequest) -> ProfileAnalysisRespo
     return ProfileAnalysisResponse(**analysis.model_dump())
 
 
-@app.post("/tailor-resume", response_model=ResumeTailoringResponse)
+@app.post(
+    "/tailor-resume",
+    response_model=ResumeTailoringResponse,
+    dependencies=[Depends(enforce_ai_rate_limit)],
+)
 def tailor_resume(profile: ProfileAnalysisRequest) -> ResumeTailoringResponse:
     """Return Gemini-generated recommendations for tailoring a resume to a job."""
     try:
@@ -292,23 +327,20 @@ def tailor_resume(profile: ProfileAnalysisRequest) -> ResumeTailoringResponse:
     return ResumeTailoringResponse(**recommendations.model_dump())
 
 
-@app.post("/tailor-resume/upload", response_model=UploadedResumeTailoringResponse)
+@app.post(
+    "/tailor-resume/upload",
+    response_model=UploadedResumeTailoringResponse,
+    dependencies=[Depends(enforce_ai_rate_limit)],
+)
 async def tailor_uploaded_resume(
     file: UploadFile = File(...),
-    job_description: str = Form(...),
+    job_description: str = Form(..., max_length=MAX_JD_CHARS),
 ) -> UploadedResumeTailoringResponse:
     """Tailor an uploaded PDF resume and return its extracted text for reuse."""
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF.")
     if not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description must not be empty.")
 
-    resume_text = extract_text_from_pdf(await file.read())
-    if not resume_text:
-        raise HTTPException(
-            status_code=400,
-            detail="The PDF contains no extractable text.",
-        )
+    resume_text = await _extract_uploaded_pdf(file)
 
     try:
         recommendations = tailor_resume_with_gemini(
