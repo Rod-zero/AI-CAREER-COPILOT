@@ -57,6 +57,39 @@ def display_tailoring_recommendations(recommendations: dict) -> None:
         st.write("No recommendations in this category.")
 
 
+def display_jd_extraction(extraction: dict) -> None:
+    st.subheader("Structured JD Requirements")
+    title = extraction.get("job_title") or "Not specified"
+    seniority = extraction.get("seniority_level") or "Not specified"
+    st.write(f"**Job title:** {title}")
+    st.write(f"**Seniority:** {seniority}")
+
+    sections = (
+        ("Required skills", "required_skills"),
+        ("Preferred skills", "preferred_skills"),
+        ("Required experience", "required_experience"),
+        ("Preferred experience", "preferred_experience"),
+        ("Education", "education_requirements"),
+        ("Tools & technologies", "tools_and_technologies"),
+        ("Domain knowledge", "domain_knowledge"),
+        ("Soft skills", "soft_skills"),
+        ("Responsibilities", "responsibilities"),
+    )
+    copy_lines = [f"Job title: {title}", f"Seniority: {seniority}"]
+    for heading, field in sections:
+        st.markdown(f"### {heading}")
+        items = extraction[field]
+        if items:
+            for item in items:
+                st.markdown(f"- {item}")
+        else:
+            st.write("Not specified.")
+        copy_lines.extend(["", f"{heading}:", *[f"- {item}" for item in items]])
+
+    with st.expander("Copy all extracted requirements"):
+        st.code("\n".join(copy_lines), language=None, wrap_lines=True)
+
+
 st.title("AI Career Copilot")
 st.write("See how your experience lines up with your next role.")
 st.subheader("Analyze your resume")
@@ -67,11 +100,34 @@ with st.form("resume-analysis-form"):
         "Target job description",
         placeholder="Paste the job's responsibilities and qualifications.",
     )
-    analyze_column, tailor_column = st.columns(2)
+    analyze_column, tailor_column, extract_column = st.columns(3)
     with analyze_column:
         resume_submitted = st.form_submit_button("Analyze Resume", type="primary")
     with tailor_column:
         resume_tailoring_submitted = st.form_submit_button("Tailor Resume")
+    with extract_column:
+        jd_extraction_submitted = st.form_submit_button("Extract JD Requirements")
+
+if jd_extraction_submitted and not resume_job_description.strip():
+    st.error("Please enter a job description before extracting requirements.")
+elif jd_extraction_submitted:
+    try:
+        with st.spinner("Extracting structured JD requirements..."):
+            response = requests.post(
+                f"{API_BASE_URL}/extract-jd",
+                json={"job_description": resume_job_description},
+                timeout=60,
+            )
+            response.raise_for_status()
+            st.session_state["jd_extraction"] = response.json()
+    except requests.Timeout:
+        st.error("JD extraction took too long. Please try again.")
+    except requests.ConnectionError:
+        st.error("Could not connect to the backend. Make sure the FastAPI server is running.")
+    except requests.RequestException:
+        st.error("JD extraction could not be completed. Please try again.")
+    except ValueError:
+        st.error("The backend returned an invalid response.")
 
 resume_action_submitted = resume_submitted or resume_tailoring_submitted
 if resume_action_submitted and resume_file is None:
@@ -158,6 +214,9 @@ elif resume_action_submitted:
             st.session_state["resume_analysis"] = result
         else:
             st.session_state["resume_tailoring"] = result
+
+if "jd_extraction" in st.session_state:
+    display_jd_extraction(st.session_state["jd_extraction"])
 
 if "resume_analysis" in st.session_state:
     resume_analysis = st.session_state["resume_analysis"]

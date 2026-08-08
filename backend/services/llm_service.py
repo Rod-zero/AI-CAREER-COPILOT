@@ -68,6 +68,24 @@ class ResumeTailoringRecommendations(BaseModel):
     overall_advice: list[str]
 
 
+class StructuredJobDescription(BaseModel):
+    """Validated requirements extracted from a job description."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    job_title: str | None
+    seniority_level: str | None
+    responsibilities: list[str]
+    required_skills: list[str]
+    preferred_skills: list[str]
+    required_experience: list[str]
+    preferred_experience: list[str]
+    education_requirements: list[str]
+    tools_and_technologies: list[str]
+    domain_knowledge: list[str]
+    soft_skills: list[str]
+
+
 def calculate_weighted_score(score_breakdown: ScoreBreakdown) -> int:
     """Calculate the overall score from the documented rubric weights."""
     return round(
@@ -273,4 +291,64 @@ def tailor_resume_with_gemini(
             )
         raise InvalidModelOutputError(
             "Gemini returned invalid resume tailoring output."
+        ) from exc
+
+
+def extract_jd_with_gemini(job_description: str) -> StructuredJobDescription:
+    """Extract validated, reusable requirements from a job description."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise MissingAPIKeyError("GEMINI_API_KEY is not configured.")
+
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    prompt = (
+        "Extract structured requirements only from the supplied job description. "
+        "Do not invent, infer, or add requirements that are not actually present. "
+        "Distinguish required from preferred qualifications only when the job "
+        "description provides that distinction; otherwise place explicitly stated "
+        "minimum qualifications in required fields. Preserve meaningful years-of-"
+        "experience requirements and qualifiers such as minimum, preferred, or "
+        "equivalent experience. Normalize obvious duplicate wording without losing "
+        "meaning. Keep responsibilities as responsibilities and do not turn every "
+        "responsibility sentence into a skill. Use null for job_title or "
+        "seniority_level when not evidenced. Return an empty array for every list "
+        "category that is not evidenced. Keep entries concise. Return JSON only and "
+        "conform exactly to the supplied response schema."
+        "\n\nJob description:\n"
+        f"{job_description}"
+    )
+
+    try:
+        with genai.Client(api_key=api_key) as client:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_json_schema": StructuredJobDescription.model_json_schema(),
+                },
+            )
+    except Exception as exc:
+        logger.warning("Gemini JD extraction request failed: %s", type(exc).__name__)
+        raise GeminiRequestError("Gemini JD extraction request failed.") from exc
+
+    try:
+        return StructuredJobDescription.model_validate_json(response.text)
+    except (TypeError, ValueError, ValidationError) as exc:
+        if isinstance(exc, ValidationError):
+            error_locations = [
+                ".".join(str(part) for part in error["loc"])
+                for error in exc.errors(include_input=False)
+            ]
+            logger.warning(
+                "Gemini JD extraction output failed schema validation at: %s",
+                ", ".join(error_locations),
+            )
+        else:
+            logger.warning(
+                "Gemini JD extraction output was not valid JSON: %s",
+                type(exc).__name__,
+            )
+        raise InvalidModelOutputError(
+            "Gemini returned invalid JD extraction output."
         ) from exc

@@ -6,7 +6,9 @@ from backend.services.llm_service import (
     InvalidModelOutputError,
     MissingAPIKeyError,
     ScoreBreakdown,
+    StructuredJobDescription,
     analyze_profile_with_gemini,
+    extract_jd_with_gemini,
     tailor_resume_with_gemini,
 )
 from backend.services.resume_parser import extract_text_from_pdf
@@ -45,6 +47,10 @@ class ResumeTailoringResponse(BaseModel):
 
 class UploadedResumeTailoringResponse(ResumeTailoringResponse):
     resume_text: str
+
+
+class JDExtractionRequest(BaseModel):
+    job_description: str = Field(min_length=1)
 
 
 ROLE_SKILLS = {
@@ -93,6 +99,31 @@ DEFAULT_SKILLS = {"communication", "problem solving", "project management"}
 def health() -> dict[str, str]:
     """Return the API health status."""
     return {"status": "ok"}
+
+
+@app.post("/extract-jd", response_model=StructuredJobDescription)
+def extract_jd(request: JDExtractionRequest) -> StructuredJobDescription:
+    """Extract structured requirements from raw job-description text."""
+    if not request.job_description.strip():
+        raise HTTPException(status_code=400, detail="Job description must not be empty.")
+
+    try:
+        return extract_jd_with_gemini(request.job_description)
+    except MissingAPIKeyError:
+        raise HTTPException(
+            status_code=500,
+            detail="LLM JD extraction is not configured.",
+        ) from None
+    except InvalidModelOutputError:
+        raise HTTPException(
+            status_code=502,
+            detail="The LLM service returned an invalid response.",
+        ) from None
+    except GeminiRequestError:
+        raise HTTPException(
+            status_code=502,
+            detail="The LLM service is currently unavailable.",
+        ) from None
 
 
 @app.post("/parse-resume")

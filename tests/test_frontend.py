@@ -38,6 +38,19 @@ TAILORING = {
     "bullet_rewrite_suggestions": ["Built a production API using Python."],
     "overall_advice": ["Lead with relevant production experience."],
 }
+JD_EXTRACTION = {
+    "job_title": "AI Engineer",
+    "seniority_level": "Senior",
+    "responsibilities": ["Build production LLM services"],
+    "required_skills": ["Python", "APIs"],
+    "preferred_skills": ["Kubernetes"],
+    "required_experience": ["5+ years of software engineering experience"],
+    "preferred_experience": [],
+    "education_requirements": ["Bachelor's degree or equivalent experience"],
+    "tools_and_technologies": ["Python", "Kubernetes"],
+    "domain_knowledge": ["Generative AI"],
+    "soft_skills": ["Cross-functional collaboration"],
+}
 
 
 def _pdf_bytes(text: str = "Python developer") -> bytes:
@@ -77,7 +90,7 @@ def test_frontend_submits_selected_analysis_mode(
     mock_post.return_value.json.return_value = ANALYSIS
 
     app = _filled_app(mode)
-    app.button[2].click().run()
+    app.button[3].click().run()
 
     assert not app.exception
     assert app.radio[0].value == (mode or "AI analysis")
@@ -109,7 +122,7 @@ def test_frontend_shows_safe_error_and_preserves_form_data(mock_post: Mock) -> N
     mock_post.side_effect = requests.HTTPError("secret backend detail")
 
     app = _filled_app()
-    app.button[2].click().run()
+    app.button[3].click().run()
 
     assert not app.exception
     assert app.error[0].value == (
@@ -128,7 +141,7 @@ def test_frontend_shows_timeout_specific_error(mock_post: Mock) -> None:
     mock_post.side_effect = requests.ReadTimeout("internal timeout detail")
 
     app = _filled_app()
-    app.button[2].click().run()
+    app.button[3].click().run()
 
     assert not app.exception
     assert app.error[0].value == "The AI analysis took too long. Please try again."
@@ -143,7 +156,7 @@ def test_frontend_does_not_submit_empty_job_description(
     app = _filled_app(mode)
     app.text_area[2].set_value("   ")
 
-    app.button[2].click().run()
+    app.button[3].click().run()
 
     assert not app.exception
     mock_post.assert_not_called()
@@ -263,6 +276,64 @@ def test_frontend_analysis_persists_when_tailoring_runs(mock_post: Mock) -> None
         heading.value == "Resume Tailoring Recommendations"
         for heading in app.subheader
     )
+
+
+@patch("requests.post")
+def test_frontend_extracts_jd_without_resume(mock_post: Mock) -> None:
+    mock_post.return_value.json.return_value = JD_EXTRACTION
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+
+    assert app.button[2].label == "Extract JD Requirements"
+    app.button[2].click().run()
+
+    assert not app.exception
+    mock_post.assert_called_once_with(
+        "http://localhost:8000/extract-jd",
+        json={"job_description": PROFILE_VALUES["job_description"]},
+        timeout=60,
+    )
+    assert any(
+        heading.value == "Structured JD Requirements" for heading in app.subheader
+    )
+    assert any("Python" in markdown.value for markdown in app.markdown)
+    assert any(
+        expander.label == "Copy all extracted requirements"
+        for expander in app.expander
+    )
+
+
+@patch("requests.post")
+def test_frontend_analysis_tailoring_and_jd_extraction_coexist(
+    mock_post: Mock,
+) -> None:
+    analysis_response = Mock()
+    analysis_response.json.return_value = RESUME_ANALYSIS
+    tailoring_response = Mock()
+    tailoring_response.json.return_value = TAILORING
+    extraction_response = Mock()
+    extraction_response.json.return_value = JD_EXTRACTION
+    mock_post.side_effect = [
+        analysis_response,
+        tailoring_response,
+        extraction_response,
+    ]
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.file_uploader[0].set_value(
+        ("resume.pdf", _pdf_bytes(), "application/pdf")
+    )
+    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+
+    app.button[0].click().run()
+    app.button[1].click().run()
+    app.button[2].click().run()
+
+    assert not app.exception
+    assert app.metric[0].value == "82%"
+    headings = [heading.value for heading in app.subheader]
+    assert "Structured JD Requirements" in headings
+    assert "Resume Tailoring Recommendations" in headings
+    assert any(code.value.startswith("Job title: AI Engineer") for code in app.code)
 
 
 @patch("requests.post")
