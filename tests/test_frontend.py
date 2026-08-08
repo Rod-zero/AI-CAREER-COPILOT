@@ -29,6 +29,15 @@ ANALYSIS = {
     "skill_gaps": ["LLM evaluation"],
     "next_steps": ["Build an LLM project"],
 }
+RESUME_ANALYSIS = {**ANALYSIS, "resume_text": "Python developer"}
+TAILORING = {
+    "top_changes": ["Lead with production Python work"],
+    "skills_to_emphasize": ["Python"],
+    "experiences_to_emphasize": ["Production API work"],
+    "missing_keywords": ["LLM evaluation"],
+    "bullet_rewrite_suggestions": ["Built a production API using Python."],
+    "overall_advice": ["Lead with relevant production experience."],
+}
 
 
 def _pdf_bytes(text: str = "Python developer") -> bytes:
@@ -68,7 +77,7 @@ def test_frontend_submits_selected_analysis_mode(
     mock_post.return_value.json.return_value = ANALYSIS
 
     app = _filled_app(mode)
-    app.button[1].click().run()
+    app.button[2].click().run()
 
     assert not app.exception
     assert app.radio[0].value == (mode or "AI analysis")
@@ -100,7 +109,7 @@ def test_frontend_shows_safe_error_and_preserves_form_data(mock_post: Mock) -> N
     mock_post.side_effect = requests.HTTPError("secret backend detail")
 
     app = _filled_app()
-    app.button[1].click().run()
+    app.button[2].click().run()
 
     assert not app.exception
     assert app.error[0].value == (
@@ -119,7 +128,7 @@ def test_frontend_shows_timeout_specific_error(mock_post: Mock) -> None:
     mock_post.side_effect = requests.ReadTimeout("internal timeout detail")
 
     app = _filled_app()
-    app.button[1].click().run()
+    app.button[2].click().run()
 
     assert not app.exception
     assert app.error[0].value == "The AI analysis took too long. Please try again."
@@ -134,7 +143,7 @@ def test_frontend_does_not_submit_empty_job_description(
     app = _filled_app(mode)
     app.text_area[2].set_value("   ")
 
-    app.button[1].click().run()
+    app.button[2].click().run()
 
     assert not app.exception
     mock_post.assert_not_called()
@@ -146,7 +155,7 @@ def test_frontend_does_not_submit_empty_job_description(
 
 @patch("requests.post")
 def test_frontend_submits_resume_analysis(mock_post: Mock) -> None:
-    mock_post.return_value.json.return_value = ANALYSIS
+    mock_post.return_value.json.return_value = RESUME_ANALYSIS
     pdf_bytes = _pdf_bytes()
     app = AppTest.from_file(str(APP_PATH)).run()
     app.file_uploader[0].set_value(("resume.pdf", pdf_bytes, "application/pdf"))
@@ -179,6 +188,81 @@ def test_frontend_submits_resume_analysis(mock_post: Mock) -> None:
         "Skill gaps",
         "Next steps",
     ]
+
+
+@patch("requests.post")
+def test_frontend_can_tailor_first_then_analyze_with_both_results(
+    mock_post: Mock,
+) -> None:
+    tailoring_response = Mock()
+    tailoring_response.json.return_value = {
+        **TAILORING,
+        "resume_text": RESUME_ANALYSIS["resume_text"],
+    }
+    analysis_response = Mock()
+    analysis_response.json.return_value = ANALYSIS
+    mock_post.side_effect = [tailoring_response, analysis_response]
+    pdf_bytes = _pdf_bytes()
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.file_uploader[0].set_value(("resume.pdf", pdf_bytes, "application/pdf"))
+    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+
+    assert [button.label for button in app.button[:2]] == [
+        "Analyze Resume",
+        "Tailor Resume",
+    ]
+    app.button[1].click().run()
+
+    assert mock_post.call_args_list[0].args == (
+        "http://localhost:8000/tailor-resume/upload",
+    )
+    assert app.code[0].value == TAILORING["bullet_rewrite_suggestions"][0]
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    assert mock_post.call_args_list[1].kwargs == {
+        "json": {
+            "current_background": RESUME_ANALYSIS["resume_text"],
+            "target_role": "",
+            "job_description": PROFILE_VALUES["job_description"],
+            "skills": [],
+            "project_experience": "",
+        },
+        "timeout": 60,
+    }
+    assert mock_post.call_args_list[1].args == ("http://localhost:8000/analyze-profile/llm",)
+    assert app.metric[0].value == "82%"
+    assert any(
+        heading.value == "Resume Tailoring Recommendations"
+        for heading in app.subheader
+    )
+    assert app.code[0].value == TAILORING["bullet_rewrite_suggestions"][0]
+
+
+@patch("requests.post")
+def test_frontend_analysis_persists_when_tailoring_runs(mock_post: Mock) -> None:
+    analysis_response = Mock()
+    analysis_response.json.return_value = RESUME_ANALYSIS
+    tailoring_response = Mock()
+    tailoring_response.json.return_value = TAILORING
+    mock_post.side_effect = [analysis_response, tailoring_response]
+    app = AppTest.from_file(str(APP_PATH)).run()
+    app.file_uploader[0].set_value(
+        ("resume.pdf", _pdf_bytes(), "application/pdf")
+    )
+    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+
+    app.button[0].click().run()
+    app.button[1].click().run()
+
+    assert not app.exception
+    assert mock_post.call_args_list[1].args == ("http://localhost:8000/tailor-resume",)
+    assert app.metric[0].value == "82%"
+    assert any(
+        heading.value == "Resume Tailoring Recommendations"
+        for heading in app.subheader
+    )
 
 
 @patch("requests.post")

@@ -58,7 +58,9 @@ def test_analyze_resume_llm_returns_analysis_and_delegates(mock_analyze: Mock) -
         "strengths": ["Python"],
         "skill_gaps": ["LLM evaluation"],
         "next_steps": ["Build an evaluated LLM project"],
+        "resume_text": response.json()["resume_text"],
     }
+    assert resume_text in response.json()["resume_text"]
     call = mock_analyze.call_args.kwargs
     assert resume_text in call["current_background"]
     assert call == {

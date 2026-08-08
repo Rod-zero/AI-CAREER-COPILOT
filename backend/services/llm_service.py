@@ -1,6 +1,7 @@
 """Gemini-backed profile analysis service."""
 
 import json
+import logging
 import os
 from datetime import date
 
@@ -9,6 +10,8 @@ from google import genai
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class LLMServiceError(RuntimeError):
@@ -50,6 +53,19 @@ class ProfileAnalysis(BaseModel):
     strengths: list[str]
     skill_gaps: list[str]
     next_steps: list[str]
+
+
+class ResumeTailoringRecommendations(BaseModel):
+    """Validated resume-tailoring structure returned by Gemini."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    top_changes: list[str]
+    skills_to_emphasize: list[str]
+    experiences_to_emphasize: list[str]
+    missing_keywords: list[str]
+    bullet_rewrite_suggestions: list[str]
+    overall_advice: list[str]
 
 
 def calculate_weighted_score(score_breakdown: ScoreBreakdown) -> int:
@@ -169,4 +185,92 @@ def analyze_profile_with_gemini(
     except (TypeError, ValueError, ValidationError) as exc:
         raise InvalidModelOutputError(
             "Gemini returned invalid profile analysis output."
+        ) from exc
+
+
+def tailor_resume_with_gemini(
+    current_background: str,
+    target_role: str,
+    job_description: str,
+    skills: list[str],
+    project_experience: str,
+) -> ResumeTailoringRecommendations:
+    """Generate validated, evidence-based resume-tailoring recommendations."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise MissingAPIKeyError("GEMINI_API_KEY is not configured.")
+
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    profile = {
+        "current_background": current_background,
+        "target_role": target_role,
+        "job_description": job_description,
+        "skills": skills,
+        "project_experience": project_experience,
+    }
+    prompt = (
+        "Compare the candidate profile against the supplied job description and "
+        "provide concise, actionable resume-tailoring recommendations. Return 3-5 "
+        "highest-impact changes in top_changes, ordered by impact. Recommend which "
+        "existing skills and experiences should be emphasized. Identify important "
+        "keywords from the job description that are missing from the current profile "
+        "or resume content. Return approximately 8-12 high-value missing keywords, "
+        "prioritizing basic requirements and strong transferable requirements; do not "
+        "dump every absent term or include near-duplicate domain keywords. Suggest "
+        "stronger resume bullet wording using only facts explicitly present in the "
+        "candidate profile. Rewrites may improve wording and emphasize evidenced "
+        "transferable skills, but must preserve every factual claim and metric. Do not "
+        "invent or imply unsupported business impact, stakeholder impact, strategic "
+        "decision-making, tools, domain experience, responsibilities, technologies, "
+        "metrics, accomplishments, or credentials. Never add phrases such as "
+        "'supporting business strategy decisions' unless explicitly evidenced. "
+        "Use conditional wording such as 'if you have experience with...' for skills "
+        "or experience that are not evidenced in the supplied profile. "
+        "When the supplied information is too vague for a concrete rewrite, recommend "
+        "what the candidate should clarify instead of fabricating details. Return JSON "
+        "only, with exactly these fields, each containing an array of strings: "
+        "top_changes, skills_to_emphasize, experiences_to_emphasize, missing_keywords, "
+        "bullet_rewrite_suggestions, and overall_advice."
+        "\n\nCandidate profile and job description:\n"
+        f"{json.dumps(profile, ensure_ascii=False)}"
+    )
+
+    try:
+        with genai.Client(api_key=api_key) as client:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_json_schema": (
+                        ResumeTailoringRecommendations.model_json_schema()
+                    ),
+                },
+            )
+    except Exception as exc:
+        logger.warning(
+            "Gemini resume tailoring request failed: %s",
+            type(exc).__name__,
+        )
+        raise GeminiRequestError("Gemini resume tailoring request failed.") from exc
+
+    try:
+        return ResumeTailoringRecommendations.model_validate_json(response.text)
+    except (TypeError, ValueError, ValidationError) as exc:
+        if isinstance(exc, ValidationError):
+            error_locations = [
+                ".".join(str(part) for part in error["loc"])
+                for error in exc.errors(include_input=False)
+            ]
+            logger.warning(
+                "Gemini resume tailoring output failed schema validation at: %s",
+                ", ".join(error_locations),
+            )
+        else:
+            logger.warning(
+                "Gemini resume tailoring output was not valid JSON: %s",
+                type(exc).__name__,
+            )
+        raise InvalidModelOutputError(
+            "Gemini returned invalid resume tailoring output."
         ) from exc

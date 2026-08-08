@@ -1,3 +1,4 @@
+import hashlib
 import os
 
 import requests
@@ -30,6 +31,32 @@ def display_score_breakdown(analysis: dict) -> None:
         st.metric(label, f"{score_breakdown[field]}%")
 
 
+def display_tailoring_recommendations(recommendations: dict) -> None:
+    st.subheader("Resume Tailoring Recommendations")
+    sections = (
+        ("Top changes before applying", "top_changes"),
+        ("Skills to emphasize", "skills_to_emphasize"),
+        ("Experiences to emphasize", "experiences_to_emphasize"),
+        ("Missing keywords", "missing_keywords"),
+        ("Overall advice", "overall_advice"),
+    )
+    for heading, field in sections:
+        st.markdown(f"### {heading}")
+        if recommendations[field]:
+            for item in recommendations[field]:
+                st.markdown(f"- {item}")
+        else:
+            st.write("No recommendations in this category.")
+
+    st.markdown("### Bullet rewrite suggestions")
+    if recommendations["bullet_rewrite_suggestions"]:
+        st.caption("Use the copy button on each suggestion to copy it.")
+        for item in recommendations["bullet_rewrite_suggestions"]:
+            st.code(item, language=None, wrap_lines=True)
+    else:
+        st.write("No recommendations in this category.")
+
+
 st.title("AI Career Copilot")
 st.write("See how your experience lines up with your next role.")
 st.subheader("Analyze your resume")
@@ -40,69 +67,120 @@ with st.form("resume-analysis-form"):
         "Target job description",
         placeholder="Paste the job's responsibilities and qualifications.",
     )
-    resume_submitted = st.form_submit_button("Analyze Resume", type="primary")
+    analyze_column, tailor_column = st.columns(2)
+    with analyze_column:
+        resume_submitted = st.form_submit_button("Analyze Resume", type="primary")
+    with tailor_column:
+        resume_tailoring_submitted = st.form_submit_button("Tailor Resume")
 
-if resume_submitted and resume_file is None:
-    st.error("Please upload a PDF resume before starting the analysis.")
-elif resume_submitted and not resume_job_description.strip():
-    st.error("Please enter a job description before analyzing your resume.")
-elif resume_submitted:
+resume_action_submitted = resume_submitted or resume_tailoring_submitted
+if resume_action_submitted and resume_file is None:
+    if resume_submitted:
+        st.error("Please upload a PDF resume before starting the analysis.")
+    else:
+        st.error("Please upload a PDF resume before tailoring your resume.")
+elif resume_action_submitted and not resume_job_description.strip():
+    if resume_submitted:
+        st.error("Please enter a job description before analyzing your resume.")
+    else:
+        st.error("Please enter a job description before tailoring your resume.")
+elif resume_action_submitted:
+    resume_bytes = resume_file.getvalue()
+    context_key = hashlib.sha256(
+        resume_bytes + resume_job_description.encode("utf-8")
+    ).hexdigest()
+    cached_text = (
+        st.session_state.get("resume_text")
+        if st.session_state.get("resume_context_key") == context_key
+        else None
+    )
     try:
-        with st.spinner("Analyzing your resume with AI..."):
-            response = requests.post(
-                f"{API_BASE_URL}/analyze-resume/llm",
-                files={
-                    "file": (
-                        resume_file.name,
-                        resume_file.getvalue(),
-                        resume_file.type,
-                    )
-                },
-                data={"job_description": resume_job_description},
-                timeout=60,
-            )
+        action_label = "Analyzing your resume with AI" if resume_submitted else "Tailoring your resume"
+        with st.spinner(f"{action_label}..."):
+            if cached_text:
+                endpoint = "/analyze-profile/llm" if resume_submitted else "/tailor-resume"
+                response = requests.post(
+                    f"{API_BASE_URL}{endpoint}",
+                    json={
+                        "current_background": cached_text,
+                        "target_role": "",
+                        "job_description": resume_job_description,
+                        "skills": [],
+                        "project_experience": "",
+                    },
+                    timeout=60,
+                )
+            else:
+                endpoint = (
+                    "/analyze-resume/llm"
+                    if resume_submitted
+                    else "/tailor-resume/upload"
+                )
+                response = requests.post(
+                    f"{API_BASE_URL}{endpoint}",
+                    files={
+                        "file": (
+                            resume_file.name,
+                            resume_bytes,
+                            resume_file.type,
+                        )
+                    },
+                    data={"job_description": resume_job_description},
+                    timeout=60,
+                )
             response.raise_for_status()
-            resume_analysis = response.json()
-            if not (
-                isinstance(resume_analysis, dict)
-                and isinstance(resume_analysis.get("match_score"), int)
-                and isinstance(resume_analysis.get("score_breakdown"), dict)
-                and all(
-                    isinstance(resume_analysis["score_breakdown"].get(field), int)
-                    for field in SCORE_LABELS
-                )
-                and all(
-                    isinstance(resume_analysis.get(field), list)
-                    for field in ("strengths", "skill_gaps", "next_steps")
-                )
-            ):
+            result = response.json()
+            extracted_text = cached_text or result.get("resume_text")
+            if not isinstance(extracted_text, str) or not extracted_text.strip():
                 raise ValueError
     except requests.Timeout:
-        st.error("The resume analysis took too long. Please try again.")
+        if resume_submitted:
+            st.error("The resume analysis took too long. Please try again.")
+        else:
+            st.error("Resume tailoring took too long. Please try again.")
     except requests.ConnectionError:
         st.error("Could not connect to the backend. Make sure the FastAPI server is running.")
     except requests.RequestException:
-        st.error("The resume analysis could not be completed. Please try again.")
+        if resume_submitted:
+            st.error("The resume analysis could not be completed. Please try again.")
+        else:
+            st.error("Resume tailoring could not be completed. Please try again.")
     except ValueError:
         st.error("The backend returned an invalid response.")
     else:
-        st.metric("Match score", f"{resume_analysis['match_score']}%")
-        display_score_breakdown(resume_analysis)
-
-        st.subheader("Strengths")
-        for strength in resume_analysis["strengths"]:
-            st.markdown(f"- {strength}")
-
-        st.subheader("Skill gaps")
-        if resume_analysis["skill_gaps"]:
-            for gap in resume_analysis["skill_gaps"]:
-                st.markdown(f"- {gap}")
+        if st.session_state.get("resume_context_key") != context_key:
+            st.session_state.pop("resume_analysis", None)
+            st.session_state.pop("resume_tailoring", None)
+        st.session_state["resume_context_key"] = context_key
+        st.session_state["resume_text"] = extracted_text
+        if resume_submitted:
+            result["resume_text"] = extracted_text
+            st.session_state["resume_analysis"] = result
         else:
-            st.write("No gaps identified in this analysis.")
+            st.session_state["resume_tailoring"] = result
 
-        st.subheader("Next steps")
-        for step in resume_analysis["next_steps"]:
-            st.markdown(f"- {step}")
+if "resume_analysis" in st.session_state:
+    resume_analysis = st.session_state["resume_analysis"]
+    st.metric("Match score", f"{resume_analysis['match_score']}%")
+    display_score_breakdown(resume_analysis)
+
+    st.subheader("Strengths")
+    for strength in resume_analysis["strengths"]:
+        st.markdown(f"- {strength}")
+
+    st.subheader("Skill gaps")
+    if resume_analysis["skill_gaps"]:
+        for gap in resume_analysis["skill_gaps"]:
+            st.markdown(f"- {gap}")
+    else:
+        st.write("No gaps identified in this analysis.")
+
+    st.subheader("Next steps")
+    for step in resume_analysis["next_steps"]:
+        st.markdown(f"- {step}")
+
+if "resume_tailoring" in st.session_state:
+    display_tailoring_recommendations(st.session_state["resume_tailoring"])
 
 st.divider()
 with st.expander("No resume? Enter profile manually"):
@@ -131,10 +209,11 @@ with st.expander("No resume? Enter profile manually"):
             placeholder="Describe a relevant project and what you contributed.",
         )
         submitted = st.form_submit_button("Analyze Profile")
+        tailoring_submitted = st.form_submit_button("Get Resume Tailoring Recommendations")
 
-    if submitted and not job_description.strip():
+    if (submitted or tailoring_submitted) and not job_description.strip():
         st.error("Please enter a job description before analyzing your profile.")
-    elif submitted:
+    elif submitted or tailoring_submitted:
         payload = {
             "current_background": current_background,
             "target_role": target_role,
@@ -142,7 +221,10 @@ with st.expander("No resume? Enter profile manually"):
             "skills": [skill.strip() for skill in skills_text.split(",") if skill.strip()],
             "project_experience": project_experience,
         }
-        endpoint, result_label = ANALYSIS_MODES[analysis_mode]
+        if tailoring_submitted:
+            endpoint, result_label = "/tailor-resume", "Resume tailoring recommendations"
+        else:
+            endpoint, result_label = ANALYSIS_MODES[analysis_mode]
 
         try:
             with st.spinner(f"Running {result_label.lower()}..."):
@@ -163,20 +245,23 @@ with st.expander("No resume? Enter profile manually"):
             st.error("The backend returned an invalid response.")
         else:
             st.info(f"Result source: {result_label}")
-            st.metric("Match score", f"{analysis['match_score']}%")
-            display_score_breakdown(analysis)
-
-            st.subheader("Strengths")
-            for strength in analysis["strengths"]:
-                st.markdown(f"- {strength}")
-
-            st.subheader("Skill gaps")
-            if analysis["skill_gaps"]:
-                for gap in analysis["skill_gaps"]:
-                    st.markdown(f"- {gap}")
+            if tailoring_submitted:
+                display_tailoring_recommendations(analysis)
             else:
-                st.write("No gaps identified in this first-pass analysis.")
+                st.metric("Match score", f"{analysis['match_score']}%")
+                display_score_breakdown(analysis)
 
-            st.subheader("Next steps")
-            for step in analysis["next_steps"]:
-                st.markdown(f"- {step}")
+                st.subheader("Strengths")
+                for strength in analysis["strengths"]:
+                    st.markdown(f"- {strength}")
+
+                st.subheader("Skill gaps")
+                if analysis["skill_gaps"]:
+                    for gap in analysis["skill_gaps"]:
+                        st.markdown(f"- {gap}")
+                else:
+                    st.write("No gaps identified in this first-pass analysis.")
+
+                st.subheader("Next steps")
+                for step in analysis["next_steps"]:
+                    st.markdown(f"- {step}")
