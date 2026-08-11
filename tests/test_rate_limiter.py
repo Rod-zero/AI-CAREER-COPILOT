@@ -66,6 +66,7 @@ def test_forwarded_ip_is_used_only_for_trusted_proxy(monkeypatch) -> None:
 
 def test_all_gemini_endpoints_are_rate_limited() -> None:
     protected_paths = {
+        "/career-agent",
         "/extract-jd",
         "/analyze-resume/llm",
         "/analyze-profile/llm",

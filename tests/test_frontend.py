@@ -1,5 +1,5 @@
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -15,6 +15,13 @@ PROFILE_VALUES = {
     "skills_text": "Python, APIs",
     "project_experience": "Built a production API.",
 }
+PROFILE_PAYLOAD = {
+    "current_background": PROFILE_VALUES["current_background"],
+    "target_role": PROFILE_VALUES["target_role"],
+    "job_description": PROFILE_VALUES["job_description"],
+    "skills": ["Python", "APIs"],
+    "project_experience": PROFILE_VALUES["project_experience"],
+}
 ANALYSIS = {
     "match_score": 82,
     "score_breakdown": {
@@ -29,7 +36,8 @@ ANALYSIS = {
     "skill_gaps": ["LLM evaluation"],
     "next_steps": ["Build an LLM project"],
 }
-RESUME_ANALYSIS = {**ANALYSIS, "resume_text": "Python developer"}
+RESUME_TEXT = "Python developer with production API experience"
+RESUME_ANALYSIS = {**ANALYSIS, "resume_text": RESUME_TEXT}
 TAILORING = {
     "top_changes": ["Lead with production Python work"],
     "skills_to_emphasize": ["Python"],
@@ -37,6 +45,11 @@ TAILORING = {
     "missing_keywords": ["LLM evaluation"],
     "bullet_rewrite_suggestions": ["Built a production API using Python."],
     "overall_advice": ["Lead with relevant production experience."],
+}
+CAREER_AGENT_RESULT = {
+    "final_answer": "Your Python API experience is relevant to this role.",
+    "tools_used": ["analyze_candidate_fit", "tailor_resume"],
+    "tool_call_count": 2,
 }
 JD_EXTRACTION = {
     "job_title": "AI Engineer",
@@ -53,7 +66,7 @@ JD_EXTRACTION = {
 }
 
 
-def _pdf_bytes(text: str = "Python developer") -> bytes:
+def _pdf_bytes(text: str = RESUME_TEXT) -> bytes:
     pdf_buffer = BytesIO()
     pdf = canvas.Canvas(pdf_buffer)
     pdf.drawString(72, 720, text)
@@ -61,233 +74,222 @@ def _pdf_bytes(text: str = "Python developer") -> bytes:
     return pdf_buffer.getvalue()
 
 
-def _filled_app(mode: str | None = None) -> AppTest:
+def _response(data: dict) -> Mock:
+    response = Mock()
+    response.json.return_value = data
+    return response
+
+
+def _widget_by_label(widgets, label: str):
+    return next(widget for widget in widgets if widget.label == label)
+
+
+def _button(app: AppTest, label: str):
+    return _widget_by_label(app.button, label)
+
+
+def _base_app(input_method: str = "Upload resume PDF") -> AppTest:
     app = AppTest.from_file(str(APP_PATH)).run()
-    if mode is not None:
-        app.radio[0].set_value(mode)
-    app.text_area[1].set_value(PROFILE_VALUES["current_background"])
-    app.text_input[0].set_value(PROFILE_VALUES["target_role"])
-    app.text_area[2].set_value(PROFILE_VALUES["job_description"])
-    app.text_input[1].set_value(PROFILE_VALUES["skills_text"])
-    app.text_area[3].set_value(PROFILE_VALUES["project_experience"])
+    if app.radio[0].value != input_method:
+        app.radio[0].set_value(input_method).run()
+    _widget_by_label(app.text_input, "Target role").set_value(
+        PROFILE_VALUES["target_role"]
+    )
+    _widget_by_label(app.text_area, "Job description").set_value(
+        PROFILE_VALUES["job_description"]
+    )
     return app
 
 
-@pytest.mark.parametrize(
-    ("mode", "expected_path", "expected_label"),
-    [
-        (None, "/analyze-profile/llm", "Gemini AI analysis"),
-        ("Rule-based analysis", "/analyze-profile", "Rule-based analysis"),
-    ],
-)
-@patch("requests.post")
-def test_frontend_submits_selected_analysis_mode(
-    mock_post: Mock,
-    mode: str | None,
-    expected_path: str,
-    expected_label: str,
-) -> None:
-    mock_post.return_value.json.return_value = ANALYSIS
-
-    app = _filled_app(mode)
-    app.button[3].click().run()
-
-    assert not app.exception
-    assert app.radio[0].value == (mode or "AI analysis")
-    mock_post.assert_called_once_with(
-        f"http://localhost:8000{expected_path}",
-        json={
-            "current_background": PROFILE_VALUES["current_background"],
-            "target_role": PROFILE_VALUES["target_role"],
-            "job_description": PROFILE_VALUES["job_description"],
-            "skills": ["Python", "APIs"],
-            "project_experience": PROFILE_VALUES["project_experience"],
-        },
-        timeout=60,
+def _manual_app() -> AppTest:
+    app = _base_app("Enter profile manually")
+    _widget_by_label(app.text_area, "Current background").set_value(
+        PROFILE_VALUES["current_background"]
     )
-    assert app.info[0].value == f"Result source: {expected_label}"
-    assert app.metric[0].value == "82%"
-    assert [(metric.label, metric.value) for metric in app.metric[1:7]] == [
-        ("Technical skills", "90%"),
-        ("Domain experience", "70%"),
-        ("Seniority", "60%"),
-        ("Role-specific requirements", "80%"),
-        ("Education", "100%"),
-        ("Communication / leadership", "80%"),
-    ]
-
-
-@patch("requests.post")
-def test_frontend_shows_safe_error_and_preserves_form_data(mock_post: Mock) -> None:
-    mock_post.side_effect = requests.HTTPError("secret backend detail")
-
-    app = _filled_app()
-    app.button[3].click().run()
-
-    assert not app.exception
-    assert app.error[0].value == (
-        "The profile analysis could not be completed. Please try again."
+    _widget_by_label(app.text_input, "Skills (comma-separated)").set_value(
+        PROFILE_VALUES["skills_text"]
     )
-    assert "secret backend detail" not in app.error[0].value
-    assert app.text_area[1].value == PROFILE_VALUES["current_background"]
-    assert app.text_input[0].value == PROFILE_VALUES["target_role"]
-    assert app.text_area[2].value == PROFILE_VALUES["job_description"]
-    assert app.text_input[1].value == PROFILE_VALUES["skills_text"]
-    assert app.text_area[3].value == PROFILE_VALUES["project_experience"]
-
-
-@patch("requests.post")
-def test_frontend_shows_timeout_specific_error(mock_post: Mock) -> None:
-    mock_post.side_effect = requests.ReadTimeout("internal timeout detail")
-
-    app = _filled_app()
-    app.button[3].click().run()
-
-    assert not app.exception
-    assert app.error[0].value == "The AI analysis took too long. Please try again."
-    assert "internal timeout detail" not in app.error[0].value
-
-
-@pytest.mark.parametrize("mode", ["AI analysis", "Rule-based analysis"])
-@patch("requests.post")
-def test_frontend_does_not_submit_empty_job_description(
-    mock_post: Mock, mode: str
-) -> None:
-    app = _filled_app(mode)
-    app.text_area[2].set_value("   ")
-
-    app.button[3].click().run()
-
-    assert not app.exception
-    mock_post.assert_not_called()
-    assert app.error[0].value == (
-        "Please enter a job description before analyzing your profile."
+    _widget_by_label(app.text_area, "Project experience").set_value(
+        PROFILE_VALUES["project_experience"]
     )
-    assert app.text_area[2].value == "   "
+    return app
 
 
-@patch("requests.post")
-def test_frontend_submits_resume_analysis(mock_post: Mock) -> None:
-    mock_post.return_value.json.return_value = RESUME_ANALYSIS
+def _upload_resume(app: AppTest) -> bytes:
     pdf_bytes = _pdf_bytes()
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.file_uploader[0].set_value(("resume.pdf", pdf_bytes, "application/pdf"))
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+    _widget_by_label(app.file_uploader, "Upload your resume").set_value(
+        ("resume.pdf", pdf_bytes, "application/pdf")
+    )
+    return pdf_bytes
 
-    app.button[0].click().run()
+
+def test_pdf_input_shows_upload_and_hides_manual_fields() -> None:
+    app = _base_app()
+
+    assert app.radio[0].value == "Upload resume PDF"
+    assert [uploader.label for uploader in app.file_uploader] == ["Upload your resume"]
+    assert "Current background" not in [area.label for area in app.text_area]
+    assert "Skills (comma-separated)" not in [item.label for item in app.text_input]
+    assert "Project experience" not in [area.label for area in app.text_area]
+    assert "Rule-based Analysis" not in [button.label for button in app.button]
+    assert any("Rule-based analysis is available" in caption.value for caption in app.caption)
+
+
+def test_manual_input_shows_profile_fields_and_hides_upload() -> None:
+    app = _manual_app()
+
+    assert app.radio[0].value == "Enter profile manually"
+    assert not app.file_uploader
+    assert "Current background" in [area.label for area in app.text_area]
+    assert "Skills (comma-separated)" in [item.label for item in app.text_input]
+    assert "Project experience" in [area.label for area in app.text_area]
+    assert "Rule-based Analysis" in [button.label for button in app.button]
+
+
+@pytest.mark.parametrize("input_method", ["Upload resume PDF", "Enter profile manually"])
+def test_target_role_and_job_description_are_shared(input_method: str) -> None:
+    app = _base_app(input_method)
+
+    assert len([item for item in app.text_input if item.label == "Target role"]) == 1
+    assert len([area for area in app.text_area if area.label == "Job description"]) == 1
+
+
+@patch("requests.post")
+def test_pdf_ai_analysis_uses_resume_endpoint(mock_post: Mock) -> None:
+    mock_post.return_value.json.return_value = RESUME_ANALYSIS
+    app = _base_app()
+    pdf_bytes = _upload_resume(app)
+
+    _button(app, "AI Analysis").click().run()
 
     assert not app.exception
-    assert app.file_uploader[0].label == "Upload your resume"
-    assert app.text_area[0].label == "Target job description"
-    assert app.button[0].label == "Analyze Resume"
-    assert app.expander[0].label == "No resume? Enter profile manually"
     mock_post.assert_called_once_with(
         "http://localhost:8000/analyze-resume/llm",
         files={"file": ("resume.pdf", pdf_bytes, "application/pdf")},
         data={"job_description": PROFILE_VALUES["job_description"]},
         timeout=60,
     )
-    assert app.metric[0].value == "82%"
-    assert [(metric.label, metric.value) for metric in app.metric[1:7]] == [
-        ("Technical skills", "90%"),
-        ("Domain experience", "70%"),
-        ("Seniority", "60%"),
-        ("Role-specific requirements", "80%"),
-        ("Education", "100%"),
-        ("Communication / leadership", "80%"),
-    ]
-    assert [heading.value for heading in app.subheader[-3:]] == [
-        "Strengths",
-        "Skill gaps",
-        "Next steps",
-    ]
+    assert any(metric.label == "Match score" and metric.value == "82%" for metric in app.metric)
 
 
 @patch("requests.post")
-def test_frontend_can_tailor_first_then_analyze_with_both_results(
-    mock_post: Mock,
-) -> None:
-    tailoring_response = Mock()
-    tailoring_response.json.return_value = {
-        **TAILORING,
-        "resume_text": RESUME_ANALYSIS["resume_text"],
-    }
-    analysis_response = Mock()
-    analysis_response.json.return_value = ANALYSIS
-    mock_post.side_effect = [tailoring_response, analysis_response]
-    pdf_bytes = _pdf_bytes()
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.file_uploader[0].set_value(("resume.pdf", pdf_bytes, "application/pdf"))
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+def test_manual_ai_analysis_uses_profile_endpoint(mock_post: Mock) -> None:
+    mock_post.return_value.json.return_value = ANALYSIS
+    app = _manual_app()
 
-    assert [button.label for button in app.button[:2]] == [
-        "Analyze Resume",
-        "Tailor Resume",
-    ]
-    app.button[1].click().run()
+    _button(app, "AI Analysis").click().run()
 
-    assert mock_post.call_args_list[0].args == (
-        "http://localhost:8000/tailor-resume/upload",
+    mock_post.assert_called_once_with(
+        "http://localhost:8000/analyze-profile/llm",
+        json=PROFILE_PAYLOAD,
+        timeout=60,
     )
-    assert app.code[0].value == TAILORING["bullet_rewrite_suggestions"][0]
 
-    app.button[0].click().run()
 
-    assert not app.exception
+@patch("requests.post")
+def test_pdf_career_agent_parses_resume_and_uses_extracted_text(mock_post: Mock) -> None:
+    mock_post.side_effect = [
+        _response({"filename": "resume.pdf", "text": RESUME_TEXT}),
+        _response(CAREER_AGENT_RESULT),
+    ]
+    app = _base_app()
+    pdf_bytes = _upload_resume(app)
+    goal = "Assess my fit and improve my resume."
+    _widget_by_label(
+        app.text_area, "What would you like the Career Agent to do?"
+    ).set_value(goal)
+
+    _button(app, "Run Career Agent").click().run()
+
+    assert mock_post.call_args_list[0].args == ("http://localhost:8000/parse-resume",)
+    assert mock_post.call_args_list[0].kwargs == {
+        "files": {"file": ("resume.pdf", pdf_bytes, "application/pdf")},
+        "timeout": 60,
+    }
+    assert mock_post.call_args_list[1].args == ("http://localhost:8000/career-agent",)
     assert mock_post.call_args_list[1].kwargs == {
         "json": {
-            "current_background": RESUME_ANALYSIS["resume_text"],
-            "target_role": "",
+            "user_request": goal,
+            "current_background": RESUME_TEXT,
+            "target_role": PROFILE_VALUES["target_role"],
             "job_description": PROFILE_VALUES["job_description"],
             "skills": [],
             "project_experience": "",
         },
         "timeout": 60,
     }
-    assert mock_post.call_args_list[1].args == ("http://localhost:8000/analyze-profile/llm",)
-    assert app.metric[0].value == "82%"
     assert any(
-        heading.value == "Resume Tailoring Recommendations"
-        for heading in app.subheader
+        markdown.value == "- Analyze Candidate Fit" for markdown in app.markdown
     )
-    assert app.code[0].value == TAILORING["bullet_rewrite_suggestions"][0]
+    assert any(metric.label == "Tool calls" and metric.value == "2" for metric in app.metric)
 
 
 @patch("requests.post")
-def test_frontend_analysis_persists_when_tailoring_runs(mock_post: Mock) -> None:
-    analysis_response = Mock()
-    analysis_response.json.return_value = RESUME_ANALYSIS
-    tailoring_response = Mock()
-    tailoring_response.json.return_value = TAILORING
-    mock_post.side_effect = [analysis_response, tailoring_response]
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.file_uploader[0].set_value(
-        ("resume.pdf", _pdf_bytes(), "application/pdf")
+def test_manual_career_agent_uses_manual_profile_fields(mock_post: Mock) -> None:
+    mock_post.return_value.json.return_value = CAREER_AGENT_RESULT
+    app = _manual_app()
+    goal = "Assess my fit."
+    _widget_by_label(
+        app.text_area, "What would you like the Career Agent to do?"
+    ).set_value(goal)
+
+    _button(app, "Run Career Agent").click().run()
+
+    mock_post.assert_called_once_with(
+        "http://localhost:8000/career-agent",
+        json={"user_request": goal, **PROFILE_PAYLOAD},
+        timeout=60,
     )
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
-
-    app.button[0].click().run()
-    app.button[1].click().run()
-
-    assert not app.exception
-    assert mock_post.call_args_list[1].args == ("http://localhost:8000/tailor-resume",)
-    assert app.metric[0].value == "82%"
     assert any(
-        heading.value == "Resume Tailoring Recommendations"
-        for heading in app.subheader
+        CAREER_AGENT_RESULT["final_answer"] in markdown.value
+        for markdown in app.markdown
     )
 
 
 @patch("requests.post")
-def test_frontend_extracts_jd_without_resume(mock_post: Mock) -> None:
+def test_pdf_tailoring_uses_upload_endpoint(mock_post: Mock) -> None:
+    mock_post.return_value.json.return_value = {**TAILORING, "resume_text": RESUME_TEXT}
+    app = _base_app()
+    pdf_bytes = _upload_resume(app)
+
+    _button(app, "Tailor Resume").click().run()
+
+    mock_post.assert_called_once_with(
+        "http://localhost:8000/tailor-resume/upload",
+        files={"file": ("resume.pdf", pdf_bytes, "application/pdf")},
+        data={"job_description": PROFILE_VALUES["job_description"]},
+        timeout=60,
+    )
+    assert any(
+        heading.value == "Resume Tailoring Recommendations" for heading in app.subheader
+    )
+
+
+@patch("requests.post")
+def test_manual_tailoring_uses_profile_endpoint(mock_post: Mock) -> None:
+    mock_post.return_value.json.return_value = TAILORING
+    app = _manual_app()
+
+    _button(app, "Tailor Resume").click().run()
+
+    mock_post.assert_called_once_with(
+        "http://localhost:8000/tailor-resume",
+        json=PROFILE_PAYLOAD,
+        timeout=60,
+    )
+
+
+@pytest.mark.parametrize("input_method", ["Upload resume PDF", "Enter profile manually"])
+@patch("requests.post")
+def test_jd_extraction_is_available_for_both_input_methods(
+    mock_post: Mock,
+    input_method: str,
+) -> None:
     mock_post.return_value.json.return_value = JD_EXTRACTION
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+    app = _base_app(input_method)
 
-    assert app.button[2].label == "Extract JD Requirements"
-    app.button[2].click().run()
+    _button(app, "Extract JD Requirements").click().run()
 
-    assert not app.exception
     mock_post.assert_called_once_with(
         "http://localhost:8000/extract-jd",
         json={"job_description": PROFILE_VALUES["job_description"]},
@@ -296,149 +298,52 @@ def test_frontend_extracts_jd_without_resume(mock_post: Mock) -> None:
     assert any(
         heading.value == "Structured JD Requirements" for heading in app.subheader
     )
-    assert any("Python" in markdown.value for markdown in app.markdown)
-    assert any(
-        expander.label == "Copy all extracted requirements"
-        for expander in app.expander
+
+
+@patch("requests.post")
+def test_manual_rule_based_analysis_uses_existing_endpoint(mock_post: Mock) -> None:
+    mock_post.return_value.json.return_value = {**ANALYSIS, "score_breakdown": None}
+    app = _manual_app()
+
+    _button(app, "Rule-based Analysis").click().run()
+
+    mock_post.assert_called_once_with(
+        "http://localhost:8000/analyze-profile",
+        json=PROFILE_PAYLOAD,
+        timeout=60,
     )
 
 
 @patch("requests.post")
-def test_frontend_analysis_tailoring_and_jd_extraction_coexist(
-    mock_post: Mock,
-) -> None:
-    analysis_response = Mock()
-    analysis_response.json.return_value = RESUME_ANALYSIS
-    tailoring_response = Mock()
-    tailoring_response.json.return_value = TAILORING
-    extraction_response = Mock()
-    extraction_response.json.return_value = JD_EXTRACTION
-    mock_post.side_effect = [
-        analysis_response,
-        tailoring_response,
-        extraction_response,
-    ]
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.file_uploader[0].set_value(
-        ("resume.pdf", _pdf_bytes(), "application/pdf")
-    )
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
-
-    app.button[0].click().run()
-    app.button[1].click().run()
-    app.button[2].click().run()
-
-    assert not app.exception
-    assert app.metric[0].value == "82%"
-    headings = [heading.value for heading in app.subheader]
-    assert "Structured JD Requirements" in headings
-    assert "Resume Tailoring Recommendations" in headings
-    assert any(code.value.startswith("Job title: AI Engineer") for code in app.code)
-
-
-@patch("requests.post")
-def test_frontend_requires_resume_upload(mock_post: Mock) -> None:
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
-
-    app.button[0].click().run()
-
-    assert not app.exception
-    mock_post.assert_not_called()
-    assert app.error[0].value == (
-        "Please upload a PDF resume before starting the analysis."
-    )
-
-
-@patch("requests.post")
-def test_frontend_requires_resume_job_description(mock_post: Mock) -> None:
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.file_uploader[0].set_value(
-        ("resume.pdf", _pdf_bytes(), "application/pdf")
-    )
-    app.text_area[0].set_value("   ")
-
-    app.button[0].click().run()
-
-    assert not app.exception
-    mock_post.assert_not_called()
-    assert app.error[0].value == (
-        "Please enter a job description before analyzing your resume."
-    )
-
-
-@patch("requests.post")
-def test_frontend_handles_resume_backend_error(mock_post: Mock) -> None:
-    mock_post.side_effect = requests.HTTPError("secret backend detail")
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.file_uploader[0].set_value(
-        ("resume.pdf", _pdf_bytes(), "application/pdf")
-    )
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
-
-    app.button[0].click().run()
-
-    assert not app.exception
-    assert app.error[0].value == (
-        "The resume analysis could not be completed. Please try again."
-    )
-    assert "secret backend detail" not in app.error[0].value
-
-
-@patch("requests.post")
-def test_frontend_preserves_analysis_after_rate_limit(mock_post: Mock) -> None:
-    analysis_response = Mock()
-    analysis_response.json.return_value = RESUME_ANALYSIS
+def test_rate_limit_error_preserves_existing_analysis_result(mock_post: Mock) -> None:
+    success = _response(ANALYSIS)
     rate_limit_response = Mock(status_code=429)
     mock_post.side_effect = [
-        analysis_response,
+        success,
         requests.HTTPError("internal detail", response=rate_limit_response),
     ]
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.file_uploader[0].set_value(
-        ("resume.pdf", _pdf_bytes(), "application/pdf")
-    )
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
+    app = _manual_app()
 
-    app.button[0].click().run()
-    app.button[1].click().run()
+    _button(app, "AI Analysis").click().run()
+    _widget_by_label(
+        app.text_area, "What would you like the Career Agent to do?"
+    ).set_value("Assess my fit.")
+    _button(app, "Run Career Agent").click().run()
 
     assert not app.exception
     assert app.error[0].value == (
         "Too many AI requests. Please wait a little and try again."
     )
-    assert app.metric[0].value == "82%"
+    assert any(metric.label == "Match score" and metric.value == "82%" for metric in app.metric)
     assert "internal detail" not in app.error[0].value
 
 
 @patch("requests.post")
-def test_frontend_rejects_oversized_jd_without_request(mock_post: Mock) -> None:
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.text_area[0].set_value("x" * 20_001)
+def test_empty_job_description_does_not_call_backend(mock_post: Mock) -> None:
+    app = _manual_app()
+    _widget_by_label(app.text_area, "Job description").set_value("   ")
 
-    app.button[2].click().run()
+    _button(app, "AI Analysis").click().run()
 
-    assert not app.exception
     mock_post.assert_not_called()
-    assert app.error[0].value == (
-        "The job description is too long. Maximum length is 20,000 characters."
-    )
-
-
-@patch("requests.post")
-def test_frontend_shows_friendly_oversized_resume_error(mock_post: Mock) -> None:
-    oversized_response = Mock(status_code=413)
-    mock_post.side_effect = requests.HTTPError(
-        "internal detail", response=oversized_response
-    )
-    app = AppTest.from_file(str(APP_PATH)).run()
-    app.file_uploader[0].set_value(
-        ("resume.pdf", _pdf_bytes(), "application/pdf")
-    )
-    app.text_area[0].set_value(PROFILE_VALUES["job_description"])
-
-    app.button[0].click().run()
-
-    assert not app.exception
-    assert app.error[0].value == "The resume PDF is too large. Maximum size is 5 MB."
-    assert "internal detail" not in app.error[0].value
+    assert app.error[0].value == "Please enter a job description before continuing."

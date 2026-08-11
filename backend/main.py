@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from backend.agent.career_agent import CareerAgentResult, run_career_agent
 from backend.config import (
     MAX_BACKGROUND_CHARS,
     MAX_JD_CHARS,
@@ -66,6 +67,16 @@ class UploadedResumeTailoringResponse(ResumeTailoringResponse):
 
 class JDExtractionRequest(BaseModel):
     job_description: str = Field(min_length=1, max_length=MAX_JD_CHARS)
+
+
+class CareerAgentRequest(ProfileAnalysisRequest):
+    user_request: str = Field(min_length=1, max_length=MAX_JD_CHARS)
+
+
+class CareerAgentResponse(BaseModel):
+    final_answer: str
+    tools_used: list[str]
+    tool_call_count: int
 
 
 ROLE_SKILLS = {
@@ -163,6 +174,46 @@ def extract_jd(request: JDExtractionRequest) -> StructuredJobDescription:
             status_code=502,
             detail="The LLM service is currently unavailable.",
         ) from None
+
+
+@app.post(
+    "/career-agent",
+    response_model=CareerAgentResponse,
+    dependencies=[Depends(enforce_ai_rate_limit)],
+)
+def career_agent(request: CareerAgentRequest) -> CareerAgentResponse:
+    """Run a model-directed Career Agent turn for the supplied context."""
+    if not request.user_request.strip():
+        raise HTTPException(status_code=400, detail="User request must not be empty.")
+    if not request.job_description.strip():
+        raise HTTPException(status_code=400, detail="Job description must not be empty.")
+
+    try:
+        result: CareerAgentResult = run_career_agent(
+            user_request=request.user_request,
+            current_background=request.current_background,
+            target_role=request.target_role,
+            job_description=request.job_description,
+            skills=request.skills,
+            project_experience=request.project_experience,
+        )
+    except MissingAPIKeyError:
+        raise HTTPException(
+            status_code=500,
+            detail="LLM Career Agent is not configured.",
+        ) from None
+    except InvalidModelOutputError:
+        raise HTTPException(
+            status_code=502,
+            detail="The LLM service returned an invalid response.",
+        ) from None
+    except GeminiRequestError:
+        raise HTTPException(
+            status_code=502,
+            detail="The LLM service is currently unavailable.",
+        ) from None
+
+    return CareerAgentResponse(**result.model_dump())
 
 
 @app.post("/parse-resume")
