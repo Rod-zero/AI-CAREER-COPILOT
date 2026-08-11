@@ -347,3 +347,272 @@ def test_empty_job_description_does_not_call_backend(mock_post: Mock) -> None:
 
     mock_post.assert_not_called()
     assert app.error[0].value == "Please enter a job description before continuing."
+
+
+@pytest.mark.parametrize(
+    ("action", "needs_goal"),
+    [
+        ("AI Analysis", False),
+        ("Run Career Agent", True),
+        ("Tailor Resume", False),
+    ],
+)
+@patch("requests.post")
+def test_pdf_only_actions_require_resume_before_backend_request(
+    mock_post: Mock,
+    action: str,
+    needs_goal: bool,
+) -> None:
+    app = _base_app()
+    if needs_goal:
+        _widget_by_label(
+            app.text_area, "What would you like the Career Agent to do?"
+        ).set_value("Assess my fit.")
+
+    _button(app, action).click().run()
+
+    mock_post.assert_not_called()
+    assert app.error[0].value == "Please upload a PDF resume before continuing."
+
+
+@patch("requests.post")
+def test_oversized_pdf_is_rejected_before_backend_request(mock_post: Mock) -> None:
+    app = _base_app()
+    oversized_pdf = b"x" * (5 * 1024 * 1024 + 1)
+    _widget_by_label(app.file_uploader, "Upload your resume").set_value(
+        ("resume.pdf", oversized_pdf, "application/pdf")
+    )
+
+    _button(app, "AI Analysis").click().run()
+
+    mock_post.assert_not_called()
+    assert app.error[0].value == "The resume PDF is too large. Maximum size is 5 MB."
+
+
+@patch("requests.post")
+def test_backend_413_uses_friendly_resume_error(mock_post: Mock) -> None:
+    error_response = Mock(status_code=413)
+    mock_post.side_effect = requests.HTTPError(
+        "internal upload detail",
+        response=error_response,
+    )
+    app = _base_app()
+    _upload_resume(app)
+
+    _button(app, "AI Analysis").click().run()
+
+    assert app.error[0].value == "The resume PDF is too large. Maximum size is 5 MB."
+    assert "internal upload detail" not in app.error[0].value
+
+
+@patch("requests.post")
+def test_oversized_shared_job_description_is_rejected_client_side(
+    mock_post: Mock,
+) -> None:
+    app = _manual_app()
+    _widget_by_label(app.text_area, "Job description").set_value("x" * 20_001)
+
+    _button(app, "Extract JD Requirements").click().run()
+
+    mock_post.assert_not_called()
+    assert app.error[0].value == (
+        "The job description is too long. Maximum length is 20,000 characters."
+    )
+
+
+@patch("requests.post")
+def test_oversized_career_agent_goal_is_rejected_client_side(mock_post: Mock) -> None:
+    app = _manual_app()
+    _widget_by_label(
+        app.text_area, "What would you like the Career Agent to do?"
+    ).set_value("x" * 20_001)
+
+    _button(app, "Run Career Agent").click().run()
+
+    mock_post.assert_not_called()
+    assert app.error[0].value == (
+        "The Career Agent request is too long. Maximum length is 20,000 characters."
+    )
+
+
+@patch("requests.post")
+def test_blank_career_agent_goal_is_rejected_before_request(mock_post: Mock) -> None:
+    app = _manual_app()
+    _widget_by_label(
+        app.text_area, "What would you like the Career Agent to do?"
+    ).set_value("   ")
+
+    _button(app, "Run Career Agent").click().run()
+
+    mock_post.assert_not_called()
+    assert app.error[0].value == (
+        "Please tell the Career Agent what you would like it to do."
+    )
+
+
+@patch("requests.post")
+def test_timeout_shows_existing_timeout_message(mock_post: Mock) -> None:
+    mock_post.side_effect = requests.ReadTimeout("internal timeout detail")
+    app = _manual_app()
+
+    _button(app, "AI Analysis").click().run()
+
+    assert app.error[0].value == "The request took too long. Please try again."
+    assert "internal timeout detail" not in app.error[0].value
+
+
+@patch("requests.post")
+def test_connection_failure_shows_existing_connection_message(mock_post: Mock) -> None:
+    mock_post.side_effect = requests.ConnectionError("internal connection detail")
+    app = _manual_app()
+
+    _button(app, "AI Analysis").click().run()
+
+    assert app.error[0].value == (
+        "Could not connect to the backend. Make sure the FastAPI server is running."
+    )
+    assert "internal connection detail" not in app.error[0].value
+
+
+@pytest.mark.parametrize(
+    ("action", "status_code", "expected_message"),
+    [
+        (
+            "AI Analysis",
+            500,
+            "The profile analysis could not be completed. Please try again.",
+        ),
+        (
+            "Run Career Agent",
+            502,
+            "The Career Agent could not complete this request. Please try again.",
+        ),
+    ],
+)
+@patch("requests.post")
+def test_ai_http_failures_are_displayed_safely(
+    mock_post: Mock,
+    action: str,
+    status_code: int,
+    expected_message: str,
+) -> None:
+    error_response = Mock(status_code=status_code)
+    mock_post.side_effect = requests.HTTPError(
+        "secret backend detail",
+        response=error_response,
+    )
+    app = _manual_app()
+    if action == "Run Career Agent":
+        _widget_by_label(
+            app.text_area, "What would you like the Career Agent to do?"
+        ).set_value("Assess my fit.")
+
+    _button(app, action).click().run()
+
+    assert app.error[0].value == expected_message
+    assert "secret backend detail" not in app.error[0].value
+
+
+@patch("requests.post")
+def test_successful_analysis_remains_visible_after_successful_tailoring(
+    mock_post: Mock,
+) -> None:
+    mock_post.side_effect = [_response(ANALYSIS), _response(TAILORING)]
+    app = _manual_app()
+
+    _button(app, "AI Analysis").click().run()
+    _button(app, "Tailor Resume").click().run()
+
+    headings = [heading.value for heading in app.subheader]
+    assert "Candidate Fit Analysis" in headings
+    assert "Resume Tailoring Recommendations" in headings
+    assert any(metric.label == "Match score" and metric.value == "82%" for metric in app.metric)
+
+
+@patch("requests.post")
+def test_analysis_tailoring_and_jd_results_can_coexist(mock_post: Mock) -> None:
+    mock_post.side_effect = [
+        _response(ANALYSIS),
+        _response(TAILORING),
+        _response(JD_EXTRACTION),
+    ]
+    app = _manual_app()
+
+    _button(app, "AI Analysis").click().run()
+    _button(app, "Tailor Resume").click().run()
+    _button(app, "Extract JD Requirements").click().run()
+
+    headings = [heading.value for heading in app.subheader]
+    assert "Candidate Fit Analysis" in headings
+    assert "Resume Tailoring Recommendations" in headings
+    assert "Structured JD Requirements" in headings
+
+
+@patch("requests.post")
+def test_career_agent_result_survives_another_action_failure(mock_post: Mock) -> None:
+    error_response = Mock(status_code=502)
+    mock_post.side_effect = [
+        _response(CAREER_AGENT_RESULT),
+        requests.HTTPError("internal detail", response=error_response),
+    ]
+    app = _manual_app()
+    _widget_by_label(
+        app.text_area, "What would you like the Career Agent to do?"
+    ).set_value("Assess my fit.")
+
+    _button(app, "Run Career Agent").click().run()
+    _button(app, "AI Analysis").click().run()
+
+    assert app.error[0].value == (
+        "The profile analysis could not be completed. Please try again."
+    )
+    assert any(
+        heading.value == "Career Agent Recommendation" for heading in app.subheader
+    )
+    assert any(
+        CAREER_AGENT_RESULT["final_answer"] in markdown.value
+        for markdown in app.markdown
+    )
+
+
+@patch("requests.post")
+def test_successful_second_action_keeps_unrelated_agent_result(mock_post: Mock) -> None:
+    mock_post.side_effect = [
+        _response(CAREER_AGENT_RESULT),
+        _response(JD_EXTRACTION),
+    ]
+    app = _manual_app()
+    _widget_by_label(
+        app.text_area, "What would you like the Career Agent to do?"
+    ).set_value("Assess my fit.")
+
+    _button(app, "Run Career Agent").click().run()
+    _button(app, "Extract JD Requirements").click().run()
+
+    headings = [heading.value for heading in app.subheader]
+    assert "Career Agent Recommendation" in headings
+    assert "Structured JD Requirements" in headings
+
+
+@patch("requests.post")
+def test_manual_inputs_remain_populated_after_failed_request(mock_post: Mock) -> None:
+    mock_post.side_effect = requests.ConnectionError("backend unavailable")
+    app = _manual_app()
+
+    _button(app, "AI Analysis").click().run()
+
+    assert _widget_by_label(app.text_area, "Current background").value == (
+        PROFILE_VALUES["current_background"]
+    )
+    assert _widget_by_label(app.text_input, "Skills (comma-separated)").value == (
+        PROFILE_VALUES["skills_text"]
+    )
+    assert _widget_by_label(app.text_area, "Project experience").value == (
+        PROFILE_VALUES["project_experience"]
+    )
+    assert _widget_by_label(app.text_input, "Target role").value == (
+        PROFILE_VALUES["target_role"]
+    )
+    assert _widget_by_label(app.text_area, "Job description").value == (
+        PROFILE_VALUES["job_description"]
+    )
